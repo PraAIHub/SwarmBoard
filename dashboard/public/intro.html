@@ -32,23 +32,40 @@
   .slide.active { display: flex; }
 
   @media (max-width: 768px) {
-    .slide { padding: 24px 20px 100px 20px; justify-content: flex-start; padding-top: 50px; }
+    body { overflow: visible; height: auto; }
+    .slide {
+      height: auto;
+      min-height: 100vh;
+      padding: 50px 16px 110px 16px;
+      justify-content: flex-start;
+      overflow-y: visible;
+    }
     h1 { font-size: 28px !important; }
-    h2 { font-size: 22px !important; }
+    h2 { font-size: 22px !important; line-height: 1.4 !important; }
     h3 { font-size: 16px !important; }
     p  { font-size: 15px !important; }
     .subtitle { font-size: 16px !important; }
-    .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr !important; gap: 12px !important; }
+    .grid-2, .grid-3, .grid-4 {
+      grid-template-columns: 1fr !important;
+      gap: 12px !important;
+      width: 100% !important;
+      max-width: 100% !important;
+    }
     .card { padding: 16px !important; }
     .card h4 { font-size: 15px !important; }
-    .card p, .card .desc { font-size: 13px !important; }
-    .bullets li { font-size: 14px !important; }
-    .code-block { font-size: 12px !important; padding: 14px !important; }
-    .state-flow { gap: 4px !important; }
-    .state-pill { font-size: 11px !important; padding: 4px 8px !important; }
+    .card p, .card .desc, .agent-card .desc { font-size: 13px !important; }
+    .bullets { max-width: 100% !important; }
+    .bullets li { font-size: 14px !important; line-height: 1.5 !important; }
+    .code-block { font-size: 11px !important; padding: 14px !important; max-width: 100% !important; overflow-x: auto; }
+    .state-flow { gap: 4px !important; flex-wrap: wrap !important; }
+    .state-pill { font-size: 10px !important; padding: 3px 6px !important; }
+    .state-arrow { font-size: 14px !important; }
     .kanban { flex-direction: column; }
+    .tag { font-size: 11px !important; }
+    .agent-card { padding: 16px !important; }
     .slide-number { top: 12px; right: 16px; }
     .kbd-hint { display: none; }
+    br { display: inline; }
   }
 
   /* Navigation */
