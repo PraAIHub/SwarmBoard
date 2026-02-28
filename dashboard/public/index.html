@@ -1,0 +1,1260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Board Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #080a0f;
+    --surface: #0f1219;
+    --surface2: #131720;
+    --border: #1e293b;
+    --text: #e5e7eb;
+    --text-dim: #9ca3af;
+    --text-muted: #6b7280;
+    --critical: #ef4444;
+    --high: #f59e0b;
+    --medium: #3b82f6;
+    --low: #6b7280;
+    --done: #22c55e;
+    --review: #8b5cf6;
+    --cyan: #06b6d4;
+    --mono: 'JetBrains Mono', monospace;
+    --sans: 'DM Sans', -apple-system, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--sans); min-height: 100vh; }
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
+
+  /* Layout */
+  .header { padding: 14px 24px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+  .header-left { display: flex; align-items: center; gap: 12px; }
+  .logo { width: 32px; height: 32px; border-radius: 6px; background: linear-gradient(135deg, #f59e0b, #ef4444); display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; }
+  .project-name { font-size: 15px; font-weight: 700; }
+  .project-meta { font-size: 10px; color: var(--text-muted); }
+  .connection { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 10px; color: var(--done); }
+  .connection-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--done); animation: pulse 2s infinite; }
+  .disconnected .connection-dot { background: var(--critical); }
+  .disconnected { color: var(--critical); }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 2px; }
+  .tab { padding: 6px 14px; border-radius: 6px; border: none; cursor: pointer; font-size: 12px; font-weight: 500; font-family: var(--sans); background: transparent; color: var(--text-muted); transition: all 0.15s; }
+  .tab.active { background: rgba(245,158,11,0.13); color: var(--high); }
+  .tab:hover { color: var(--text); }
+
+  .main { padding: 16px 24px 24px; }
+
+  /* Alerts */
+  .alerts { margin-bottom: 12px; }
+  .alert { padding: 8px 14px; border-radius: 6px; font-size: 12px; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; animation: fadeIn 0.3s ease; }
+  .alert-error { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: var(--critical); }
+  .alert-rate-limit { background: rgba(245,158,11,0.15); border: 2px solid rgba(245,158,11,0.5); color: var(--high); padding: 12px 16px; border-radius: 6px; margin-bottom: 12px; font-family: var(--mono); font-size: 12px; font-weight: 600; }
+  .alert-warn { background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3); color: var(--high); }
+  .alert-info { background: rgba(59,130,246,0.1); border: 1px solid rgba(59,130,246,0.3); color: var(--medium); }
+
+  /* Halt Banner */
+  .halt-banner { background: rgba(239,68,68,0.15); border: 2px solid var(--critical); border-radius: 8px; padding: 16px 20px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; animation: fadeIn 0.3s ease; }
+  .halt-banner h2 { font-size: 16px; color: var(--critical); }
+  .halt-banner p { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+  .halt-banner button { padding: 8px 16px; border-radius: 6px; border: 1px solid var(--done); background: rgba(34,197,94,0.15); color: var(--done); cursor: pointer; font-weight: 600; font-size: 12px; }
+  .halt-banner button:hover { background: rgba(34,197,94,0.3); }
+
+  /* Agent Status */
+  .agents-bar { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; }
+  .agent-card { padding: 10px 14px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); }
+  .agent-card-header { display: flex; justify-content: space-between; align-items: center; }
+  .agent-name { font-family: var(--mono); font-size: 13px; font-weight: 700; }
+  .agent-status { display: flex; align-items: center; gap: 4px; }
+  .agent-status-dot { width: 6px; height: 6px; border-radius: 50%; }
+  .agent-status-dot.working { background: var(--high); animation: pulse 1.5s infinite; }
+  .agent-status-dot.idle { background: var(--done); }
+  .agent-status-dot.waiting { background: var(--text-muted); }
+  .agent-status-dot.blocked { background: var(--critical); }
+  .agent-status-label { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; }
+  .agent-current { font-size: 10px; color: var(--text-dim); margin-top: 4px; }
+
+  /* Swim Lanes */
+  .board { display: grid; gap: 8px; overflow-x: auto; padding-bottom: 8px; }
+  .lane { min-width: 150px; }
+  .lane-header { padding: 8px 10px; margin-bottom: 6px; border-radius: 6px; background: rgba(15,18,25,0.5); }
+  .lane-title { font-family: var(--mono); font-size: 9px; letter-spacing: 1.5px; font-weight: 700; }
+  .lane-count { font-size: 10px; color: var(--text-muted); font-weight: 600; float: right; }
+  .lane-desc { font-size: 9px; color: var(--text-muted); margin-top: 2px; display: block; }
+  .lane-empty { padding: 20px 10px; text-align: center; font-size: 10px; color: #374151; border-radius: 6px; border: 1px dashed var(--border); }
+
+  /* Ticket Card */
+  .ticket { background: var(--surface); border: 1px solid rgba(30,41,59,0.5); border-radius: 6px; padding: 10px 12px; margin-bottom: 6px; cursor: pointer; transition: all 0.2s; position: relative; }
+  .ticket:hover { transform: translateX(2px); }
+  .ticket-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+  .ticket-id { font-family: var(--mono); font-size: 10px; color: var(--text-dim); letter-spacing: 1px; }
+  .ticket-priority { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
+  .ticket-title { font-size: 12px; font-weight: 500; line-height: 1.3; margin-bottom: 6px; }
+  .ticket-bottom { display: flex; justify-content: space-between; align-items: center; font-size: 10px; }
+  .ticket-assignee { font-size: 9px; padding: 2px 6px; border-radius: 3px; font-weight: 600; }
+  .ticket-deps { font-size: 9px; color: var(--text-muted); }
+  .priority-critical { color: var(--critical); }
+  .priority-high { color: var(--high); }
+  .priority-medium { color: var(--medium); }
+  .priority-low { color: var(--low); }
+  .border-critical { border-left: 3px solid var(--critical); }
+  .border-high { border-left: 3px solid var(--high); }
+  .border-medium { border-left: 3px solid var(--medium); }
+  .border-low { border-left: 3px solid var(--low); }
+
+  /* Panels */
+  .panel { background: linear-gradient(135deg, var(--surface), var(--surface2)); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .panel-title { font-family: var(--mono); font-size: 11px; color: var(--text-dim); letter-spacing: 2px; font-weight: 700; margin-bottom: 12px; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-top: 12px; }
+
+  /* Blackboard */
+  .signal { display: flex; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .signal:last-child { border-bottom: none; }
+  .signal-type { font-size: 8px; padding: 2px 6px; border-radius: 3px; height: fit-content; margin-top: 2px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; white-space: nowrap; }
+  .signal-finding { background: rgba(245,158,11,0.13); color: var(--high); }
+  .signal-decision { background: rgba(59,130,246,0.13); color: var(--medium); }
+  .signal-blocker { background: rgba(239,68,68,0.13); color: var(--critical); }
+  .signal-halt { background: rgba(239,68,68,0.3); color: var(--critical); }
+  .signal-stuck { background: rgba(249,115,22,0.13); color: #f97316; }
+  .signal-handoff { background: rgba(139,92,246,0.13); color: var(--review); }
+  .signal-available { background: rgba(34,197,94,0.13); color: var(--done); }
+  .signal-text { font-size: 11px; color: #d1d5db; line-height: 1.3; }
+  .signal-meta { font-size: 9px; color: var(--text-muted); margin-top: 2px; }
+
+  /* Human Controls */
+  .action-group { margin-bottom: 12px; }
+  .action-group-title { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; font-weight: 600; }
+  .action-btn { display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin-bottom: 4px; border-radius: 6px; border: 1px solid var(--border); background: transparent; cursor: pointer; width: 100%; text-align: left; transition: all 0.15s; font-family: var(--sans); }
+  .action-btn:hover { border-color: var(--high); background: rgba(245,158,11,0.05); }
+  .action-btn-icon { font-size: 16px; width: 24px; text-align: center; }
+  .action-btn-label { font-size: 12px; color: var(--text); font-weight: 500; }
+  .action-btn-desc { font-size: 10px; color: var(--text-muted); }
+  .action-btn-danger { border-color: rgba(239,68,68,0.3); }
+  .action-btn-danger:hover { border-color: var(--critical); background: rgba(239,68,68,0.1); }
+
+  /* Progress Bar */
+  .progress-bar { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; margin: 8px 0; }
+  .progress-fill { height: 100%; border-radius: 2px; background: linear-gradient(90deg, var(--done), var(--high)); transition: width 0.5s ease; }
+  .progress-stats { display: flex; gap: 16px; font-size: 10px; color: var(--text-muted); }
+  .progress-pct { font-family: var(--mono); font-size: 22px; font-weight: 700; }
+
+  /* Modal */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; z-index: 100; }
+  .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; max-width: 520px; width: 90%; max-height: 80vh; overflow-y: auto; animation: fadeIn 0.2s ease; }
+  .modal h3 { font-size: 16px; margin-bottom: 4px; }
+  .modal-meta { font-family: var(--mono); font-size: 11px; color: var(--text-muted); margin-bottom: 16px; }
+  .modal-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
+  .modal-tag { font-size: 10px; padding: 3px 8px; border-radius: 4px; background: var(--border); color: var(--text-dim); }
+  .modal-section { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 14px; }
+  .modal-section-title { font-family: var(--mono); font-size: 10px; color: var(--high); letter-spacing: 2px; font-weight: 700; margin-bottom: 8px; }
+  .modal-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .modal-action-btn { padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 500; transition: all 0.15s; font-family: var(--sans); }
+  .modal-close { position: absolute; top: 16px; right: 16px; cursor: pointer; color: var(--text-muted); font-size: 18px; background: none; border: none; }
+
+  /* Toast */
+  .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); padding: 10px 20px; border-radius: 8px; font-size: 13px; font-weight: 600; z-index: 200; animation: slideIn 0.3s ease; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+  .toast-success { background: var(--done); color: var(--bg); }
+  .toast-error { background: var(--critical); color: white; }
+  .toast-info { background: var(--high); color: var(--bg); }
+
+  /* Input modal */
+  .input-modal textarea, .input-modal input, .input-modal select { width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 12px; margin-bottom: 8px; }
+  .input-modal textarea { min-height: 60px; resize: vertical; }
+  .input-modal label { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; display: block; }
+  .input-modal .btn-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+  .btn-primary { padding: 8px 16px; border-radius: 6px; border: none; cursor: pointer; font-weight: 600; font-size: 12px; background: var(--high); color: var(--bg); }
+  .btn-secondary { padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border); cursor: pointer; font-weight: 500; font-size: 12px; background: transparent; color: var(--text-dim); }
+  .btn-danger { padding: 8px 16px; border-radius: 6px; border: none; cursor: pointer; font-weight: 600; font-size: 12px; background: var(--critical); color: white; }
+
+  /* Start Sprint / Sprint Actions */
+  .sprint-btn { padding: 8px 18px; border-radius: 8px; border: none; cursor: pointer; font-weight: 700; font-size: 12px; font-family: var(--sans); transition: all 0.2s; }
+  .sprint-btn-start { background: linear-gradient(135deg, #22c55e, #16a34a); color: white; box-shadow: 0 0 16px rgba(34,197,94,0.3); }
+  .sprint-btn-start:hover { box-shadow: 0 0 24px rgba(34,197,94,0.5); transform: scale(1.02); }
+  .sprint-btn-review { background: linear-gradient(135deg, #8b5cf6, #7c3aed); color: white; box-shadow: 0 0 16px rgba(139,92,246,0.3); }
+  .sprint-btn-review:hover { box-shadow: 0 0 24px rgba(139,92,246,0.5); }
+  .sprint-active-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 20px; background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.3); font-size: 11px; font-weight: 600; color: var(--done); }
+  .sprint-active-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--done); animation: pulse 2s infinite; }
+  .auto-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 20px; font-size: 10px; font-weight: 600; cursor: pointer; border: none; font-family: var(--sans); transition: all 0.2s; }
+  .auto-badge-on { background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.3); color: var(--done); }
+  .auto-badge-off { background: rgba(107,114,128,0.1); border: 1px solid rgba(107,114,128,0.3); color: var(--text-muted); }
+
+  /* Agents Section */
+  .agents-section { margin-bottom: 16px; }
+  .agents-section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; cursor: pointer; user-select: none; }
+  .agents-section-title { font-family: var(--mono); font-size: 10px; letter-spacing: 2px; font-weight: 700; color: var(--text-dim); }
+  .agents-section-meta { font-size: 10px; color: var(--text-muted); display: flex; gap: 12px; align-items: center; }
+  .agents-section-toggle { font-size: 10px; color: var(--text-muted); transition: transform 0.2s; }
+  .agents-section-toggle.collapsed { transform: rotate(-90deg); }
+
+  /* Enhanced Agent Cards */
+  .agent-card { padding: 12px 14px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); cursor: pointer; transition: all 0.25s ease; position: relative; overflow: hidden; }
+  .agent-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; opacity: 0; transition: opacity 0.2s; }
+  .agent-card:hover { border-color: rgba(245,158,11,0.3); transform: translateY(-1px); }
+  .agent-card.running { border-color: rgba(245,158,11,0.4); }
+  .agent-card.running::before { background: linear-gradient(90deg, var(--high), var(--done)); opacity: 1; }
+  .agent-card.error { border-color: rgba(239,68,68,0.4); }
+  .agent-card.error::before { background: var(--critical); opacity: 1; }
+  .agent-card.rate-limited { border-color: rgba(245,158,11,0.6); }
+  .agent-card.rate-limited::before { background: var(--high); opacity: 1; }
+  .agent-card.stopped { border-color: rgba(239,68,68,0.2); opacity: 0.7; }
+  .agent-card.idle { border-color: rgba(34,197,94,0.2); }
+  .agent-card.idle::before { background: var(--done); opacity: 0.5; }
+  .agent-status-dot.running { background: var(--high); animation: pulse 1.5s infinite; }
+  .agent-status-dot.stopped { background: var(--critical); opacity: 0.6; }
+  .agent-status-dot.error { background: var(--critical); animation: pulse 1s infinite; }
+  .agent-status-dot.rate-limited { background: var(--high); animation: pulse 1.5s infinite; }
+  .agent-ticket-info { margin-top: 6px; padding: 5px 8px; border-radius: 4px; background: rgba(245,158,11,0.06); border: 1px solid rgba(245,158,11,0.15); }
+  .agent-ticket-id { font-family: var(--mono); font-size: 10px; color: var(--high); letter-spacing: 0.5px; }
+  .agent-ticket-title { font-size: 10px; color: var(--text-dim); margin-top: 2px; line-height: 1.3; }
+  .agent-ticket-status { display: inline-block; font-size: 8px; padding: 1px 5px; border-radius: 3px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; margin-top: 3px; }
+  .agent-elapsed { font-family: var(--mono); font-size: 9px; color: var(--text-muted); margin-top: 4px; }
+  .agent-actions { display: flex; gap: 4px; margin-top: 8px; }
+  .agent-action-btn { padding: 4px 10px; border-radius: 4px; border: 1px solid var(--border); background: transparent; color: var(--text-dim); cursor: pointer; font-size: 9px; font-weight: 600; font-family: var(--sans); transition: all 0.15s; }
+  .agent-action-btn:hover { border-color: var(--high); color: var(--text); }
+  .agent-action-btn.stop { border-color: rgba(239,68,68,0.4); color: var(--critical); }
+  .agent-action-btn.stop:hover { background: rgba(239,68,68,0.1); }
+  .agent-action-btn.start { border-color: rgba(34,197,94,0.4); color: var(--done); }
+  .agent-action-btn.start:hover { background: rgba(34,197,94,0.1); }
+  .agent-action-btn.restart { border-color: rgba(59,130,246,0.4); color: var(--medium); }
+  .agent-action-btn.restart:hover { background: rgba(59,130,246,0.1); }
+  .agent-log-preview { margin-top: 8px; padding: 8px 10px; border-radius: 4px; background: var(--bg); font-family: var(--mono); font-size: 9px; color: var(--text-muted); max-height: 0; overflow: hidden; transition: max-height 0.3s ease, padding 0.3s ease, margin 0.3s ease; padding: 0 10px; margin-top: 0; }
+  .agent-card.expanded .agent-log-preview { max-height: 120px; overflow-y: auto; padding: 8px 10px; margin-top: 8px; }
+  .agent-log-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 1px 0; }
+  .agent-log-empty { color: #374151; font-style: italic; }
+  .agent-expand-hint { font-size: 8px; color: #374151; text-align: center; margin-top: 4px; letter-spacing: 0.5px; transition: color 0.2s; }
+  .agent-card:hover .agent-expand-hint { color: var(--text-muted); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .agent-spinner { width: 10px; height: 10px; border: 2px solid rgba(245,158,11,0.2); border-top-color: var(--high); border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block; margin-left: 6px; vertical-align: middle; }
+
+  /* Agent Logs Tab */
+  .log-feed { font-family: var(--mono); font-size: 11px; max-height: 500px; overflow-y: auto; padding: 12px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border); }
+  .log-entry { padding: 3px 0; border-bottom: 1px solid rgba(30,41,59,0.3); line-height: 1.5; }
+  .log-entry:last-child { border-bottom: none; }
+  .log-time { color: var(--text-muted); }
+  .log-level-info { color: var(--medium); }
+  .log-level-success { color: var(--done); }
+  .log-level-warn { color: var(--high); }
+  .log-level-error { color: var(--critical); }
+  .log-filter { display: flex; gap: 4px; margin-bottom: 8px; }
+  .log-filter-btn { padding: 4px 10px; border-radius: 4px; border: 1px solid var(--border); background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; font-weight: 600; font-family: var(--sans); }
+  .log-filter-btn.active { background: rgba(245,158,11,0.13); color: var(--high); border-color: rgba(245,158,11,0.4); }
+
+  /* Toggle Switch */
+  .toggle { position: relative; width: 36px; height: 20px; border-radius: 10px; background: var(--border); cursor: pointer; transition: background 0.2s; display: inline-block; vertical-align: middle; }
+  .toggle.on { background: var(--done); }
+  .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: white; transition: transform 0.2s; }
+  .toggle.on::after { transform: translateX(16px); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <div class="logo">◈</div>
+    <div>
+      <div class="project-name" id="project-name">Loading...</div>
+      <div class="project-meta" id="project-meta"></div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px;">
+    <div id="sprint-action-container"></div>
+    <div id="auto-dispatch-container"></div>
+    <div class="tabs">
+      <button class="tab active" data-tab="board">Sprint Board</button>
+      <button class="tab" data-tab="signals">Blackboard</button>
+      <button class="tab" data-tab="logs">Agent Logs</button>
+      <button class="tab" data-tab="control">Human Control</button>
+    </div>
+    <div class="connection" id="connection">
+      <span class="connection-dot"></span>
+      <span>LIVE</span>
+    </div>
+  </div>
+</div>
+
+<div class="main">
+  <div id="halt-container"></div>
+  <div id="alerts-container" class="alerts"></div>
+  <div class="agents-section">
+    <div class="agents-section-header" onclick="toggleAgentsCollapse()">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="agents-section-toggle" id="agents-toggle">&#9660;</span>
+        <span class="agents-section-title">AGENTS</span>
+      </div>
+      <div class="agents-section-meta" id="agents-meta"></div>
+    </div>
+    <div id="agents-bar" class="agents-bar"></div>
+  </div>
+  <div id="tab-board"></div>
+  <div id="tab-signals" style="display:none"></div>
+  <div id="tab-logs" style="display:none"></div>
+  <div id="tab-control" style="display:none"></div>
+</div>
+
+<div id="modal-container"></div>
+<div id="toast-container"></div>
+
+<script>
+// ── State ───────────────────────────────────────────────────────────────────
+let STATE = null;
+let activeTab = 'board';
+let expandedAgent = null;   // Track which agent card is expanded
+let logFilter = 'all';      // Agent log filter
+let agentsCollapsed = false; // Track agents section collapse
+
+const LANES = [
+  { key: 'groomed', label: 'BACKLOG', color: '#6b7280', desc: 'Awaiting approval' },
+  { key: 'dev-ready', label: 'DEV READY', color: '#3b82f6', desc: 'Approved for development' },
+  { key: 'in-dev', label: 'IN DEV', color: '#f59e0b', desc: 'Agent building' },
+  { key: 'review-ready', label: 'REVIEW READY', color: '#8b5cf6', desc: 'Awaiting code review' },
+  { key: 'in-review', label: 'IN REVIEW', color: '#a855f7', desc: 'Reviewer checking' },
+  { key: 'changes-requested', label: 'CHANGES REQ', color: '#f97316', desc: 'Needs fixes' },
+  { key: 'test-ready', label: 'QA READY', color: '#06b6d4', desc: 'Ready for testing' },
+  { key: 'in-test', label: 'IN TEST', color: '#10b981', desc: 'Agent testing' },
+  { key: 'done', label: 'DONE', color: '#22c55e', desc: 'Completed' },
+  { key: 'blocked', label: 'BLOCKED', color: '#ef4444', desc: 'Needs intervention' },
+  { key: 'halted', label: 'HALTED', color: '#ef4444', desc: 'Sprint halted' },
+];
+
+const PRIORITY_COLORS = { critical: '#ef4444', high: '#f59e0b', medium: '#3b82f6', low: '#6b7280' };
+const TYPE_ICONS = { feature: '◆', 'tech-debt': '⚙', bug: '●', spike: '◇' };
+
+// ── SSE Connection ──────────────────────────────────────────────────────────
+function connectSSE() {
+  const es = new EventSource('/api/events');
+  const connEl = document.getElementById('connection');
+
+  es.onopen = () => { connEl.className = 'connection'; connEl.querySelector('span:last-child').textContent = 'LIVE'; };
+  es.onerror = () => { connEl.className = 'connection disconnected'; connEl.querySelector('span:last-child').textContent = 'DISCONNECTED'; };
+
+  es.addEventListener('state-update', e => {
+    STATE = JSON.parse(e.data);
+    render();
+  });
+
+  es.addEventListener('agent-update', e => {
+    // Refresh full state to pick up agent changes
+    fetchState();
+  });
+
+  es.addEventListener('orchestrator-log', e => {
+    // Append to orchestrator log in state and re-render logs tab
+    if (STATE) {
+      const entry = JSON.parse(e.data);
+      if (!STATE.orchestratorLog) STATE.orchestratorLog = [];
+      STATE.orchestratorLog.push(entry);
+      if (STATE.orchestratorLog.length > 50) STATE.orchestratorLog.shift();
+      if (activeTab === 'logs') renderLogs();
+    }
+  });
+
+  es.addEventListener('agent-output', e => {
+    // Update agent log previews live
+    if (activeTab === 'logs') renderLogs();
+  });
+
+  es.addEventListener('rate-limit', e => {
+    const data = JSON.parse(e.data);
+    if (STATE) {
+      STATE.rateLimited = { detected: true, resetInfo: data.resetInfo, at: data.at };
+    }
+    fetchState(); // Full refresh to pick up stopped agents
+  });
+}
+
+// ── API ─────────────────────────────────────────────────────────────────────
+async function api(endpoint, body) {
+  try {
+    const res = await fetch(`/api/actions/${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(`Action completed: ${endpoint}`, 'success');
+      fetchState();
+    } else {
+      showToast(data.error || 'Action failed', 'error');
+    }
+  } catch (e) {
+    showToast('Network error', 'error');
+  }
+}
+
+async function fetchState() {
+  try {
+    const res = await fetch('/api/state');
+    STATE = await res.json();
+    render();
+  } catch (e) {
+    console.error('Failed to fetch state:', e);
+  }
+}
+
+// ── Rendering ───────────────────────────────────────────────────────────────
+function render() {
+  if (!STATE) return;
+  renderHeader();
+  renderSprintAction();
+  renderAutoDispatch();
+  renderHalt();
+  renderAlerts();
+  renderAgents();
+  renderBoard();
+  renderSignals();
+  renderLogs();
+  renderControl();
+}
+
+function renderHeader() {
+  const name = STATE.board?.project || 'Agent Board';
+  const sprint = STATE.sprint;
+  document.getElementById('project-name').textContent = name;
+  document.getElementById('project-meta').textContent = sprint ? `Sprint ${sprint.sprint} · ${sprint.goal?.substring(0, 80)}...` : '';
+}
+
+function renderSprintAction() {
+  const c = document.getElementById('sprint-action-container');
+  const sprint = STATE.sprint;
+  const sprintStatus = sprint?.status || 'unknown';
+  const tickets = STATE.board?.tickets || [];
+  const allDone = tickets.length > 0 && tickets.every(t => t.status === 'done' || t.status === 'blocked');
+
+  if (sprintStatus === 'planning') {
+    c.innerHTML = `<button class="sprint-btn sprint-btn-start" onclick="startSprint()">Start Sprint</button>`;
+  } else if (sprintStatus === 'active' && allDone) {
+    c.innerHTML = `<span class="sprint-active-badge"><span class="dot"></span> Active</span>
+      <button class="sprint-btn sprint-btn-review" onclick="showToast('Run /review in a Claude Code terminal','info')" style="margin-left:8px">Sprint Review</button>
+      <button class="sprint-btn" onclick="resetSprint()" style="margin-left:8px;background:var(--surface2);border:1px solid var(--border);color:var(--text-dim)">Reset Sprint</button>`;
+  } else if (sprintStatus === 'active') {
+    c.innerHTML = `<span class="sprint-active-badge"><span class="dot"></span> Active</span>
+      <button class="sprint-btn" onclick="resetSprint()" style="margin-left:8px;background:var(--surface2);border:1px solid var(--border);color:var(--text-dim)">Reset Sprint</button>`;
+  } else if (sprintStatus === 'halted') {
+    c.innerHTML = `<span style="color:var(--critical);font-size:11px;font-weight:700">HALTED</span>
+      <button class="sprint-btn" onclick="resetSprint()" style="margin-left:8px;background:var(--surface2);border:1px solid var(--border);color:var(--text-dim)">Reset Sprint</button>`;
+  } else {
+    c.innerHTML = '';
+  }
+}
+
+function renderAutoDispatch() {
+  const c = document.getElementById('auto-dispatch-container');
+  const isActive = STATE.sprint?.status === 'active';
+  if (!isActive) { c.innerHTML = ''; return; }
+
+  const on = STATE.autoMode;
+  c.innerHTML = `<button class="auto-badge ${on ? 'auto-badge-on' : 'auto-badge-off'}" onclick="toggleAutoDispatch()">
+    Auto ${on ? 'ON' : 'OFF'}
+  </button>`;
+}
+
+function renderHalt() {
+  const c = document.getElementById('halt-container');
+  if (STATE.isHalted) {
+    c.innerHTML = `<div class="halt-banner"><div><h2>⛔ SPRINT HALTED</h2><p>All agents should stop. No new work should be picked.</p></div><button onclick="api('resume')">Resume Sprint</button></div>`;
+  } else { c.innerHTML = ''; }
+}
+
+function renderAlerts() {
+  const c = document.getElementById('alerts-container');
+  let html = '';
+
+  // Rate limit banner — top priority
+  if (STATE.rateLimited && STATE.rateLimited.detected) {
+    const resetInfo = STATE.rateLimited.resetInfo || 'unknown';
+    const at = STATE.rateLimited.at ? new Date(STATE.rateLimited.at).toLocaleTimeString() : '';
+    html += `<div class="alert-rate-limit">⛔ RATE LIMITED — Out of Claude usage. Resets: ${resetInfo}. All agents stopped.${at ? ' (detected at ' + at + ')' : ''}</div>`;
+  }
+
+  if (STATE.alerts && STATE.alerts.length > 0) {
+    html += STATE.alerts.filter(a => !STATE.isHalted || a.level === 'error').map(a =>
+      `<div class="alert alert-${a.level}">${a.level === 'error' ? '🛑' : '⚠️'} ${a.message}</div>`
+    ).join('');
+  }
+
+  c.innerHTML = html;
+}
+
+function renderAgentsMeta() {
+  // Always update the meta summary line, even when collapsed
+  const metaEl = document.getElementById('agents-meta');
+  if (!metaEl || !STATE.agents) return;
+  const running = STATE.agents.filter(a => ['working','running'].includes(a.status)).length;
+  const idle = STATE.agents.filter(a => a.status === 'idle').length;
+  const other = STATE.agents.length - running - idle;
+  const parts = [];
+  if (running > 0) parts.push(`<span style="color:var(--high)">${running} running</span>`);
+  if (idle > 0) parts.push(`<span style="color:var(--done)">${idle} idle</span>`);
+  if (other > 0) parts.push(`<span>${other} other</span>`);
+  metaEl.innerHTML = parts.join('<span style="color:#374151"> | </span>');
+}
+
+function renderAgents() {
+  renderAgentsMeta();
+  if (agentsCollapsed) return;  // Don't re-render cards if collapsed (bar is hidden)
+
+  const c = document.getElementById('agents-bar');
+  const statusColors = {
+    working: '#f59e0b', running: '#f59e0b', idle: '#22c55e',
+    waiting: '#6b7280', blocked: '#ef4444', stopped: '#ef4444', error: '#ef4444', 'rate-limited': '#f59e0b'
+  };
+  const statusDotClass = s =>
+    ['working','running'].includes(s) ? 'running' :
+    s === 'idle' ? 'idle' :
+    s === 'waiting' ? 'waiting' :
+    s === 'rate-limited' ? 'rate-limited' : ['blocked','stopped','error'].includes(s) ? 'blocked' : 'waiting';
+
+  // Lane color lookup for ticket status badges
+  const laneColors = {};
+  LANES.forEach(l => { laneColors[l.key] = l.color; });
+
+  c.innerHTML = STATE.agents.map(a => {
+    const isExpanded = expandedAgent === a.role;
+    const isRunning = ['working','running'].includes(a.status);
+    const isStopped = a.status === 'stopped';
+    const isError = a.status === 'error';
+    const isRateLimited = a.status === 'rate-limited';
+    const logLines = (a.log || []).slice(-10);
+
+    // Find ticket details for current work
+    const currentTicket = a.current && STATE.board?.tickets
+      ? STATE.board.tickets.find(t => t.id === a.current) : null;
+
+    // Elapsed time since agent started (use log start entry)
+    const startedLog = (STATE.orchestratorLog || []).filter(
+      l => l.message.includes(`Starting ${a.role}`) || l.message.includes(`started ${a.role}`)
+    ).pop();
+    let elapsed = '';
+    if (isRunning && startedLog) {
+      const secs = Math.round((Date.now() - new Date(startedLog.at).getTime()) / 1000);
+      const mins = Math.floor(secs / 60);
+      elapsed = mins > 0 ? `${mins}m ${secs % 60}s` : `${secs}s`;
+    }
+
+    // Card state class
+    const cardClass = isRunning ? 'running' : isRateLimited ? 'rate-limited' : isError ? 'error' : isStopped ? 'stopped' : a.status === 'idle' ? 'idle' : '';
+
+    return `
+      <div class="agent-card ${cardClass} ${isExpanded ? 'expanded' : ''}"
+           onclick="toggleAgentExpand('${a.role}')">
+        <div class="agent-card-header">
+          <span class="agent-name">${a.label}${isRunning ? '<span class="agent-spinner"></span>' : ''}</span>
+          <div class="agent-status">
+            <span class="agent-status-dot ${statusDotClass(a.status)}"></span>
+            <span class="agent-status-label" style="color:${statusColors[a.status] || '#6b7280'}">${a.status}</span>
+          </div>
+        </div>
+
+        ${currentTicket ? `
+          <div class="agent-ticket-info">
+            <div class="agent-ticket-id">${currentTicket.id}</div>
+            <div class="agent-ticket-title">${currentTicket.title.substring(0, 45)}${currentTicket.title.length > 45 ? '...' : ''}</div>
+            <span class="agent-ticket-status" style="background:${laneColors[currentTicket.status] || '#6b7280'}22;color:${laneColors[currentTicket.status] || '#6b7280'}">${currentTicket.status}</span>
+          </div>
+        ` : a.current ? `<div class="agent-current" style="margin-top:6px">&rarr; ${a.current}</div>` : ''}
+
+        ${elapsed ? `<div class="agent-elapsed">${elapsed} elapsed</div>` : ''}
+
+        <div class="agent-actions" onclick="event.stopPropagation()">
+          ${isRunning
+            ? `<button class="agent-action-btn stop" onclick="stopAgent('${a.role}')">Stop</button>`
+            : isStopped || isError
+              ? `<button class="agent-action-btn restart" onclick="startAgent('${a.role}')">Restart</button>`
+              : `<button class="agent-action-btn start" onclick="startAgent('${a.role}')">Start</button>`
+          }
+        </div>
+
+        <div class="agent-log-preview">
+          ${logLines.length
+            ? logLines.map(l => `<div class="agent-log-line">${l.text}</div>`).join('')
+            : '<div class="agent-log-empty">No output yet</div>'}
+        </div>
+        <div class="agent-expand-hint">${isExpanded ? 'click to collapse' : 'click to expand log'}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderBoard() {
+  const c = document.getElementById('tab-board');
+  if (!STATE.board) { c.innerHTML = '<p>No board data</p>'; return; }
+
+  const tickets = STATE.board.tickets || [];
+  const activeLanes = LANES.filter(l => {
+    const has = tickets.some(t => t.status === l.key);
+    return has || ['groomed','dev-ready','in-dev','review-ready','test-ready','done'].includes(l.key);
+  });
+
+  const done = tickets.filter(t => t.status === 'done').length;
+  const inProgress = tickets.filter(t => ['in-dev','in-review','in-test','review-ready','test-ready','changes-requested'].includes(t.status)).length;
+  const total = tickets.length;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+
+  c.innerHTML = `
+    <div class="board" style="grid-template-columns: repeat(${activeLanes.length}, minmax(150px, 1fr))">
+      ${activeLanes.map(lane => {
+        const lt = tickets.filter(t => t.status === lane.key);
+        return `
+          <div class="lane">
+            <div class="lane-header" style="border-top: 2px solid ${lane.color}">
+              <span class="lane-title" style="color:${lane.color}">${lane.label}</span>
+              <span class="lane-count">${lt.length}</span>
+              <span class="lane-desc">${lane.desc}</span>
+            </div>
+            ${lt.length ? lt.map(t => ticketCard(t)).join('') : '<div class="lane-empty">No tickets</div>'}
+          </div>
+        `;
+      }).join('')}
+    </div>
+    <div class="grid-2">
+      <div class="panel">
+        <div class="panel-title">SPRINT PROGRESS</div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline;">
+          <span style="font-family:var(--mono);font-size:11px;color:var(--text-dim)">Sprint ${STATE.sprint?.sprint || '?'}</span>
+          <span class="progress-pct">${pct}%</span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill" style="width:${((done + inProgress * 0.5) / Math.max(total, 1)) * 100}%"></div></div>
+        <div class="progress-stats">
+          <span><span style="color:var(--done)">●</span> ${done} done</span>
+          <span><span style="color:var(--high)">●</span> ${inProgress} active</span>
+          <span><span style="color:var(--text-muted)">●</span> ${total - done - inProgress} queued</span>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">BLACKBOARD SUMMARY</div>
+        ${renderSignalSummary()}
+      </div>
+    </div>
+  `;
+}
+
+function ticketCard(t) {
+  return `
+    <div class="ticket border-${t.priority}" onclick="showTicketModal('${t.id}')">
+      <div class="ticket-top">
+        <span class="ticket-id">${TYPE_ICONS[t.type] || '◆'} ${t.id}</span>
+        <span class="ticket-priority priority-${t.priority}">${t.priority}</span>
+      </div>
+      <div class="ticket-title">${t.title.length > 50 ? t.title.substring(0, 50) + '...' : t.title}</div>
+      <div class="ticket-bottom">
+        <span style="font-size:10px;color:var(--text-muted)">${t.complexity}</span>
+        ${t.assignee ? `<span class="ticket-assignee" style="background:rgba(245,158,11,0.13);color:#f59e0b">${t.assignee.replace('-agent','').toUpperCase()}</span>` : ''}
+        ${t.depends_on?.length ? `<span class="ticket-deps">← ${t.depends_on.join(', ')}</span>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function renderSignalSummary() {
+  if (!STATE.signals || STATE.signals.length === 0) return '<p style="font-size:11px;color:var(--text-muted)">No signals</p>';
+  const counts = {};
+  STATE.signals.forEach(s => { counts[s.type] = (counts[s.type] || 0) + 1; });
+  const latest = STATE.signals[STATE.signals.length - 1];
+  return `
+    <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">
+      ${Object.entries(counts).map(([k, v]) => `<span style="margin-right:12px">${v} ${k}${v > 1 ? 's' : ''}</span>`).join('')}
+    </div>
+    ${latest ? `<div style="font-size:10px;color:var(--text-muted)">Latest: [${latest.type}] ${latest.title}</div>` : ''}
+  `;
+}
+
+function renderSignals() {
+  const c = document.getElementById('tab-signals');
+  c.innerHTML = `
+    <div class="grid-2">
+      <div class="panel">
+        <div class="panel-title">BLACKBOARD — LIVE SIGNALS</div>
+        <div style="max-height:400px;overflow-y:auto">
+          ${(STATE.signals || []).map(s => `
+            <div class="signal">
+              <span class="signal-type signal-${s.type}">${s.type}</span>
+              <div>
+                <div class="signal-text">${s.title}</div>
+                <div class="signal-meta">${s.agent} · ${s.time}</div>
+              </div>
+            </div>
+          `).join('') || '<p style="font-size:11px;color:var(--text-muted)">No signals yet</p>'}
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">RAW BLACKBOARD</div>
+        <pre style="font-family:var(--mono);font-size:10px;color:var(--text-dim);white-space:pre-wrap;max-height:400px;overflow-y:auto">${STATE.raw_blackboard || 'Empty'}</pre>
+      </div>
+    </div>
+  `;
+}
+
+let agentLogView = null; // null = orchestrator, or role name like 'pm-agent'
+let agentLogData = {};  // cached full log data per role
+
+function renderLogs() {
+  const c = document.getElementById('tab-logs');
+  const logs = STATE.orchestratorLog || [];
+  const filtered = logFilter === 'all' ? logs : logs.filter(l => l.message.toLowerCase().includes(logFilter));
+
+  const agentTabs = [
+    { key: null, label: 'Orchestrator' },
+    { key: 'pm-agent', label: 'PM Agent' },
+    { key: 'dev-agent', label: 'DEV Agent' },
+    { key: 'reviewer-agent', label: 'REV Agent' },
+    { key: 'test-agent', label: 'QA Agent' },
+  ];
+
+  const tabsHtml = agentTabs.map(t =>
+    `<button class="log-filter-btn ${agentLogView === t.key ? 'active' : ''}" onclick="${t.key ? "viewAgentLog('" + t.key + "')" : 'viewOrchestratorLog()'}">${t.label}</button>`
+  ).join('');
+
+  if (agentLogView) {
+    // Per-agent log view
+    const logLines = agentLogData[agentLogView] || [];
+    c.innerHTML = `
+      <div class="panel">
+        <div class="panel-title">${agentLogView.toUpperCase()} — FULL LOG (${logLines.length} entries)</div>
+        <div class="log-filter">${tabsHtml}</div>
+        <div class="log-feed" id="log-feed" style="max-height:500px">
+          ${logLines.length ? logLines.map(l => {
+            const time = l.at ? new Date(l.at).toLocaleTimeString() : '';
+            const isRateLimit = /out of (extra )?usage|rate.limit/i.test(l.text || '');
+            const cls = isRateLimit ? 'log-level-error' : '';
+            return `<div class="log-entry">
+              <span class="log-time">[${time}]</span>
+              <span class="${cls}">${escapeHtml(l.text || '')}</span>
+            </div>`;
+          }).join('') : '<div style="color:var(--text-muted);padding:20px;text-align:center">No log entries for this agent.</div>'}
+        </div>
+      </div>
+    `;
+  } else {
+    // Orchestrator log view
+    c.innerHTML = `
+      <div class="panel">
+        <div class="panel-title">ORCHESTRATOR LOG — REAL-TIME</div>
+        <div class="log-filter">
+          ${tabsHtml}
+          <span style="border-left:1px solid var(--border);margin:0 4px"></span>
+          <button class="log-filter-btn ${logFilter === 'all' ? 'active' : ''}" onclick="setLogFilter('all')">All</button>
+          <button class="log-filter-btn ${logFilter === 'pm' ? 'active' : ''}" onclick="setLogFilter('pm')">PM</button>
+          <button class="log-filter-btn ${logFilter === 'dev' ? 'active' : ''}" onclick="setLogFilter('dev')">DEV</button>
+          <button class="log-filter-btn ${logFilter === 'reviewer' ? 'active' : ''}" onclick="setLogFilter('reviewer')">REV</button>
+          <button class="log-filter-btn ${logFilter === 'test' ? 'active' : ''}" onclick="setLogFilter('test')">QA</button>
+        </div>
+        <div class="log-feed" id="log-feed">
+          ${filtered.length ? filtered.map(l => {
+            const time = l.at ? new Date(l.at).toLocaleTimeString() : '';
+            return `<div class="log-entry">
+              <span class="log-time">[${time}]</span>
+              <span class="log-level-${l.level}">${l.level.toUpperCase()}</span>
+              ${escapeHtml(l.message || '')}
+            </div>`;
+          }).join('') : '<div style="color:var(--text-muted);padding:20px;text-align:center">No log entries yet. Start a sprint or agent to see activity.</div>'}
+        </div>
+      </div>
+    `;
+  }
+
+  // Auto-scroll to bottom
+  const feed = document.getElementById('log-feed');
+  if (feed) feed.scrollTop = feed.scrollHeight;
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+async function viewAgentLog(role) {
+  agentLogView = role;
+  try {
+    const res = await fetch('/api/agents/' + role + '/log');
+    const data = await res.json();
+    agentLogData[role] = data.lines || [];
+  } catch (e) {
+    agentLogData[role] = [{ text: 'Failed to load log', at: new Date().toISOString() }];
+  }
+  renderLogs();
+}
+
+function viewOrchestratorLog() {
+  agentLogView = null;
+  renderLogs();
+}
+
+function renderControl() {
+  const c = document.getElementById('tab-control');
+  const groomed = (STATE.board?.tickets || []).filter(t => t.status === 'groomed');
+  const allTickets = (STATE.board?.tickets || []).filter(t => t.status !== 'done');
+
+  c.innerHTML = `
+    <div class="grid-2">
+      <div>
+        <div class="panel" style="margin-bottom:12px">
+          <div class="panel-title" style="color:var(--high)">⚡ QUICK ACTIONS</div>
+
+          ${groomed.length > 0 ? `
+            <div class="action-group">
+              <div class="action-group-title">Approve Tickets (${groomed.length} waiting)</div>
+              ${groomed.map(t => `
+                <button class="action-btn" onclick="api('approve', {ticketId:'${t.id}'})">
+                  <span class="action-btn-icon" style="color:var(--done)">✓</span>
+                  <div>
+                    <div class="action-btn-label">Approve ${t.id}</div>
+                    <div class="action-btn-desc">${t.title.substring(0, 40)}...</div>
+                  </div>
+                </button>
+              `).join('')}
+              <button class="action-btn" onclick="approveAll()">
+                <span class="action-btn-icon" style="color:var(--done)">✓✓</span>
+                <div>
+                  <div class="action-btn-label">Approve All ${groomed.length} Tickets</div>
+                  <div class="action-btn-desc">Move all groomed tickets to dev-ready</div>
+                </div>
+              </button>
+            </div>
+          ` : '<p style="font-size:11px;color:var(--text-muted);margin-bottom:12px">No tickets awaiting approval</p>'}
+
+          <div class="action-group">
+            <div class="action-group-title">Create</div>
+            <button class="action-btn" onclick="showCreateTicketModal()">
+              <span class="action-btn-icon" style="color:var(--medium)">+</span>
+              <div>
+                <div class="action-btn-label">New Ticket</div>
+                <div class="action-btn-desc">Add a ticket to the backlog</div>
+              </div>
+            </button>
+          </div>
+
+          <div class="action-group">
+            <div class="action-group-title">Auto-Dispatch</div>
+            <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;">
+              <span class="toggle ${STATE.autoMode ? 'on' : ''}" onclick="toggleAutoDispatch()"></span>
+              <span style="font-size:12px;color:var(--text-dim)">${STATE.autoMode ? 'Agents auto-dispatched when work is available' : 'Manual control — start agents individually'}</span>
+            </div>
+          </div>
+
+          <div class="action-group">
+            <div class="action-group-title">Signals</div>
+            <button class="action-btn" onclick="showSignalModal()">
+              <span class="action-btn-icon">📡</span>
+              <div>
+                <div class="action-btn-label">Post Signal to Blackboard</div>
+                <div class="action-btn-desc">finding, decision, blocker</div>
+              </div>
+            </button>
+          </div>
+
+          <div class="action-group">
+            <div class="action-group-title">Block a Ticket</div>
+            <button class="action-btn" onclick="showBlockModal()">
+              <span class="action-btn-icon">🚫</span>
+              <div>
+                <div class="action-btn-label">Block Ticket</div>
+                <div class="action-btn-desc">Stop a specific ticket with a reason</div>
+              </div>
+            </button>
+          </div>
+
+          <div class="action-group">
+            <div class="action-group-title" style="color:var(--critical)">Emergency</div>
+            <button class="action-btn action-btn-danger" onclick="showHaltModal()">
+              <span class="action-btn-icon">🛑</span>
+              <div>
+                <div class="action-btn-label" style="color:var(--critical)">HALT SPRINT</div>
+                <div class="action-btn-desc">Stop ALL agents immediately</div>
+              </div>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">HOW TO INTERRUPT</div>
+        ${[
+          { emoji: '🟢', title: 'Nudge', desc: 'Post a finding to blackboard. Agents adjust on their next loop.' },
+          { emoji: '🟡', title: 'Redirect', desc: 'Reprioritize a ticket. Different ticket gets picked next.' },
+          { emoji: '🟠', title: 'Block', desc: 'Post blocker on specific tickets. Those tickets can\'t be claimed.' },
+          { emoji: '🔴', title: 'Override', desc: 'Force approve or block a PR merge. Human outranks reviewer.' },
+          { emoji: '⛔', title: 'Recall', desc: 'Move a ticket back to backlog. Work paused, exits sprint.' },
+          { emoji: '🛑', title: 'Halt', desc: 'ALL agents stop. Every in-progress ticket moves to halted.' },
+        ].map((item, i) => `
+          <div style="padding:8px 0;${i < 5 ? 'border-bottom:1px solid var(--border);' : ''}">
+            <div style="font-size:12px;font-weight:500">${item.emoji} ${item.title}</div>
+            <div style="font-size:10px;color:var(--text-dim);margin-top:2px;line-height:1.4">${item.desc}</div>
+          </div>
+        `).join('')}
+
+        <div style="border-top:1px solid var(--border);padding-top:14px;margin-top:14px;">
+          <div class="panel-title">SPRINT CEREMONIES</div>
+          <div style="font-size:11px;color:var(--text-dim);line-height:1.6">
+            <strong>/review</strong> — Demo delivered work, accept or reject<br>
+            <strong>/retro</strong> — Analyze process, propose improvements<br>
+            <strong>/halt</strong> — Emergency stop from any terminal<br>
+            <strong>/board</strong> — CLI view in terminal<br>
+            <br>
+            Run these in any Claude Code terminal.
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ── Modals ───────────────────────────────────────────────────────────────────
+function showTicketModal(ticketId) {
+  const t = STATE.board.tickets.find(x => x.id === ticketId);
+  if (!t) return;
+
+  const actions = [];
+  if (t.status === 'groomed') actions.push({ label: 'Approve → Dev Ready', fn: `api('approve',{ticketId:'${t.id}'})`, color: 'var(--done)' });
+  if (t.status !== 'done' && t.status !== 'blocked' && t.status !== 'halted') actions.push({ label: 'Block', fn: `showBlockModalFor('${t.id}')`, color: 'var(--critical)' });
+
+  // Human can move tickets to any status (override authority)
+  const allStatuses = STATE.schema?.valid_statuses || [];
+  const allTargets = allStatuses.filter(s => s !== t.status);
+
+  document.getElementById('modal-container').innerHTML = `
+    <div class="modal-overlay" onclick="closeModal()">
+      <div class="modal" onclick="event.stopPropagation()" style="position:relative">
+        <button class="modal-close" onclick="closeModal()">✕</button>
+        <div class="modal-meta">${t.id}</div>
+        <h3>${escapeHtml(t.title)}</h3>
+        <div class="modal-tags">
+          <span class="modal-tag" style="background:${PRIORITY_COLORS[t.priority]}22;color:${PRIORITY_COLORS[t.priority]}">${t.priority}</span>
+          <span class="modal-tag">${t.type}</span>
+          <span class="modal-tag">${t.complexity}</span>
+          <span class="modal-tag">${t.status}</span>
+          ${t.assignee ? `<span class="modal-tag" style="background:rgba(245,158,11,0.13);color:#f59e0b">${escapeHtml(t.assignee)}</span>` : ''}
+        </div>
+        ${(() => {
+          const workingAgent = STATE.agents.find(a => a.current === t.id);
+          return workingAgent ? `<div style="font-size:11px;margin-bottom:12px;padding:6px 10px;border-radius:4px;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);color:var(--high)">Agent <strong>${workingAgent.label}</strong> is currently working on this ticket</div>` : '';
+        })()}
+        ${t.depends_on?.length ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:12px">Depends on: ${t.depends_on.map(d => `<span style="color:var(--medium)">${d}</span>`).join(', ')}</div>` : ''}
+        ${t.acceptance_criteria ? `
+          <div class="modal-section">
+            <div class="modal-section-title">ACCEPTANCE CRITERIA</div>
+            ${t.acceptance_criteria.map(ac => `<div style="font-size:11px;color:var(--text-dim);margin-bottom:4px;padding-left:12px;border-left:2px solid var(--border)">` + escapeHtml(ac) + `</div>`).join('')}
+          </div>
+        ` : ''}
+        ${t.dev_notes ? `<div class="modal-section"><div class="modal-section-title">DEV NOTES</div><div style="font-size:11px;color:var(--text-dim);line-height:1.4">${escapeHtml(t.dev_notes)}</div></div>` : ''}
+        ${t.history?.length ? `
+          <div class="modal-section">
+            <div class="modal-section-title">HISTORY</div>
+            ${t.history.slice(-5).map(h => `<div style="font-size:10px;color:var(--text-muted);margin-bottom:4px">${escapeHtml(h.from)} → ${escapeHtml(h.to)} by ${escapeHtml(h.by)} — ${escapeHtml(h.note)}</div>`).join('')}
+          </div>
+        ` : ''}
+        <div class="modal-section">
+          <div class="modal-section-title">ACTIONS</div>
+          ${actions.length ? `
+            <div class="modal-actions">
+              ${actions.map(a => `<button class="modal-action-btn" style="background:${a.color}15;border:1px solid ${a.color}44;color:${a.color}" onclick="${a.fn};closeModal()">${a.label}</button>`).join('')}
+            </div>
+          ` : ''}
+          ${allTargets.length ? `
+            ${STATE.agents.find(a => a.role === t.assignee)?.status === 'working' ? `<div style="margin-top:8px;font-size:10px;padding:4px 8px;border-radius:4px;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.2);color:var(--high)">⚠ ${t.assignee} is assigned — moving will stop the agent</div>` : ''}
+            <div style="margin-top:10px;display:flex;align-items:center;gap:8px">
+              <label style="font-size:10px;color:var(--text-muted);white-space:nowrap">Move to:</label>
+              <select id="move-status-select" style="flex:1;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:11px;font-family:var(--mono)">
+                ${allTargets.map(s => `<option value="${s}">${s}</option>`).join('')}
+              </select>
+              <button class="modal-action-btn" style="background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.27);color:var(--medium);white-space:nowrap" onclick="moveTicket('${t.id}')">Move</button>
+            </div>
+          ` : ''}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function showHaltModal() {
+  document.getElementById('modal-container').innerHTML = `
+    <div class="modal-overlay" onclick="closeModal()">
+      <div class="modal input-modal" onclick="event.stopPropagation()">
+        <h3 style="color:var(--critical)">🛑 Halt Sprint</h3>
+        <p style="font-size:12px;color:var(--text-dim);margin:8px 0">This will stop ALL agents and move all in-progress tickets to halted.</p>
+        <label>Reason</label>
+        <textarea id="halt-reason" placeholder="Why are you halting? e.g., Wrong approach on auth..."></textarea>
+        <div class="btn-row">
+          <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+          <button class="btn-danger" onclick="api('halt',{reason:document.getElementById('halt-reason').value});closeModal()">Halt Everything</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function showBlockModal() {
+  const tickets = (STATE.board?.tickets || []).filter(t => !['done','blocked','halted'].includes(t.status));
+  document.getElementById('modal-container').innerHTML = `
+    <div class="modal-overlay" onclick="closeModal()">
+      <div class="modal input-modal" onclick="event.stopPropagation()">
+        <h3>🚫 Block a Ticket</h3>
+        <label>Ticket</label>
+        <select id="block-ticket">
+          ${tickets.map(t => `<option value="${t.id}">${t.id} — ${t.title.substring(0, 40)}</option>`).join('')}
+        </select>
+        <label>Reason</label>
+        <textarea id="block-reason" placeholder="Why is this blocked?"></textarea>
+        <div class="btn-row">
+          <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+          <button class="btn-danger" onclick="api('block',{ticketId:document.getElementById('block-ticket').value,reason:document.getElementById('block-reason').value});closeModal()">Block Ticket</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function showBlockModalFor(ticketId) {
+  closeModal();
+  document.getElementById('modal-container').innerHTML = `
+    <div class="modal-overlay" onclick="closeModal()">
+      <div class="modal input-modal" onclick="event.stopPropagation()">
+        <h3>🚫 Block ${ticketId}</h3>
+        <label>Reason</label>
+        <textarea id="block-reason" placeholder="Why is this blocked?"></textarea>
+        <div class="btn-row">
+          <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+          <button class="btn-danger" onclick="api('block',{ticketId:'${ticketId}',reason:document.getElementById('block-reason').value});closeModal()">Block</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function showSignalModal() {
+  document.getElementById('modal-container').innerHTML = `
+    <div class="modal-overlay" onclick="closeModal()">
+      <div class="modal input-modal" onclick="event.stopPropagation()">
+        <h3>📡 Post Signal to Blackboard</h3>
+        <label>Signal Type</label>
+        <select id="signal-type">
+          <option value="finding">Finding — new knowledge</option>
+          <option value="decision">Decision — resolved question</option>
+          <option value="blocker">Blocker — can't proceed</option>
+          <option value="stuck">Stuck — degraded progress</option>
+        </select>
+        <label>Title</label>
+        <input id="signal-title" placeholder="One-line summary">
+        <label>Detail</label>
+        <textarea id="signal-detail" placeholder="More context..."></textarea>
+        <label>Affects (ticket IDs)</label>
+        <input id="signal-affects" placeholder="e.g., TICKET-004, TICKET-005">
+        <div class="btn-row">
+          <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+          <button class="btn-primary" onclick="api('signal',{type:document.getElementById('signal-type').value,title:document.getElementById('signal-title').value,detail:document.getElementById('signal-detail').value,affects:document.getElementById('signal-affects').value});closeModal()">Post Signal</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function showCreateTicketModal() {
+  document.getElementById('modal-container').innerHTML = `
+    <div class="modal-overlay" onclick="closeModal()">
+      <div class="modal input-modal" onclick="event.stopPropagation()">
+        <h3>+ New Ticket</h3>
+        <p style="font-size:12px;color:var(--text-dim);margin:8px 0">Create a new ticket. PM agent will groom it in the next cycle.</p>
+        <label>Title</label>
+        <input id="ticket-title" placeholder="Short description of the work">
+        <label>Type</label>
+        <select id="ticket-type">
+          <option value="feature">Feature</option>
+          <option value="bug">Bug</option>
+          <option value="tech-debt">Tech Debt</option>
+          <option value="spike">Spike</option>
+        </select>
+        <label>Priority</label>
+        <select id="ticket-priority">
+          <option value="high">High</option>
+          <option value="medium" selected>Medium</option>
+          <option value="low">Low</option>
+          <option value="critical">Critical</option>
+        </select>
+        <label>Description (optional)</label>
+        <textarea id="ticket-desc" placeholder="Additional context, requirements, or notes..."></textarea>
+        <div class="btn-row">
+          <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+          <button class="btn-primary" onclick="createTicket()">Create Ticket</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function createTicket() {
+  const title = document.getElementById('ticket-title').value;
+  const type = document.getElementById('ticket-type').value;
+  const priority = document.getElementById('ticket-priority').value;
+  const description = document.getElementById('ticket-desc').value;
+  if (!title.trim()) { showToast('Title is required', 'error'); return; }
+  await api('create-ticket', { title, type, priority, description });
+  closeModal();
+}
+
+async function startSprint() {
+  try {
+    const res = await fetch('/api/actions/start-sprint', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(`Sprint started — ${data.approved.length} tickets approved`, 'success');
+      fetchState();
+    } else {
+      showToast(data.error || 'Failed to start sprint', 'error');
+    }
+  } catch (e) {
+    showToast('Network error', 'error');
+  }
+}
+
+async function moveTicket(ticketId) {
+  const toStatus = document.getElementById('move-status-select').value;
+  if (!toStatus) return;
+
+  // Check if an agent is actively working on this ticket
+  const ticket = STATE.board.tickets.find(t => t.id === ticketId);
+  const activeAgent = ticket?.assignee;
+  let shouldStopAgent = false;
+
+  if (activeAgent && STATE.agents.find(a => a.role === activeAgent)?.status === 'working') {
+    const agentLabel = STATE.agents.find(a => a.role === activeAgent)?.label || activeAgent;
+    if (!confirm(`${agentLabel} is currently working on ${ticketId}.\n\nStop the agent and move ticket to "${toStatus}"?`)) return;
+    shouldStopAgent = true;
+  }
+
+  try {
+    const res = await fetch('/api/actions/move-ticket', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticketId, toStatus, stopAgent: shouldStopAgent })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(`${ticketId} moved to ${toStatus}${shouldStopAgent ? ` — ${activeAgent} stopped` : ''}`, 'success');
+      closeModal();
+      fetchState();
+    } else {
+      showToast(data.error || 'Failed to move ticket', 'error');
+    }
+  } catch (e) {
+    showToast('Network error', 'error');
+  }
+}
+
+async function resetSprint() {
+  if (!confirm('Reset sprint to planning? This will stop all agents and revert all active tickets back to groomed.')) return;
+  try {
+    const res = await fetch('/api/actions/reset-sprint', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(`Sprint reset — ${data.reverted.length} tickets reverted to groomed`, 'success');
+      fetchState();
+    } else {
+      showToast(data.error || 'Failed to reset sprint', 'error');
+    }
+  } catch (e) {
+    showToast('Network error', 'error');
+  }
+}
+
+async function startAgent(role) {
+  try {
+    const res = await fetch(`/api/actions/agents/${role}/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(`${role} started`, 'success');
+    } else {
+      showToast(`Could not start ${role}`, 'info');
+    }
+    fetchState();
+  } catch (e) {
+    showToast('Network error', 'error');
+  }
+}
+
+async function stopAgent(role) {
+  try {
+    const res = await fetch(`/api/actions/agents/${role}/stop`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    const data = await res.json();
+    showToast(data.ok ? `${role} stopped` : `${role} was not running`, data.ok ? 'success' : 'info');
+    fetchState();
+  } catch (e) {
+    showToast('Network error', 'error');
+  }
+}
+
+async function toggleAutoDispatch() {
+  try {
+    const res = await fetch('/api/actions/dispatch/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    const data = await res.json();
+    showToast(`Auto-dispatch ${data.autoMode ? 'ON' : 'OFF'}`, 'success');
+    fetchState();
+  } catch (e) {
+    showToast('Network error', 'error');
+  }
+}
+
+function toggleAgentExpand(role) {
+  expandedAgent = expandedAgent === role ? null : role;
+  renderAgents();
+}
+
+function toggleAgentsCollapse() {
+  agentsCollapsed = !agentsCollapsed;
+  const bar = document.getElementById('agents-bar');
+  const toggle = document.getElementById('agents-toggle');
+  if (agentsCollapsed) {
+    bar.style.display = 'none';
+    toggle.classList.add('collapsed');
+  } else {
+    bar.style.display = '';
+    toggle.classList.remove('collapsed');
+    renderAgents();
+  }
+}
+
+function setLogFilter(filter) {
+  logFilter = filter;
+  renderLogs();
+}
+
+function closeModal() { document.getElementById('modal-container').innerHTML = ''; }
+
+async function approveAll() {
+  const groomed = (STATE.board?.tickets || []).filter(t => t.status === 'groomed');
+  for (const t of groomed) { await api('approve', { ticketId: t.id }); }
+}
+
+// ── Toast ────────────────────────────────────────────────────────────────────
+function showToast(msg, type = 'info') {
+  const c = document.getElementById('toast-container');
+  c.innerHTML = `<div class="toast toast-${type}">${msg}</div>`;
+  setTimeout(() => { c.innerHTML = ''; }, 3000);
+}
+
+// ── Tabs ─────────────────────────────────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    activeTab = tab.dataset.tab;
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    ['board', 'signals', 'logs', 'control'].forEach(t => {
+      document.getElementById(`tab-${t}`).style.display = t === activeTab ? '' : 'none';
+    });
+  });
+});
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+fetchState();
+connectSSE();
+</script>
+</body>
+</html>

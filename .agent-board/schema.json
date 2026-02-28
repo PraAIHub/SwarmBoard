@@ -1,0 +1,62 @@
+{
+  "valid_statuses": ["new", "groomed", "dev-ready", "in-dev", "blocked", "review-ready", "in-review", "changes-requested", "test-ready", "in-test", "done", "halted"],
+  "valid_types": ["feature", "bug", "tech-debt", "spike"],
+  "valid_priorities": ["critical", "high", "medium", "low"],
+  "valid_transitions": {
+    "new":                ["groomed"],
+    "groomed":            ["dev-ready"],
+    "dev-ready":          ["in-dev"],
+    "in-dev":             ["review-ready", "blocked", "halted"],
+    "blocked":            ["in-dev", "dev-ready"],
+    "review-ready":       ["in-review"],
+    "in-review":          ["test-ready", "changes-requested"],
+    "changes-requested":  ["in-dev"],
+    "test-ready":         ["in-test"],
+    "in-test":            ["done", "dev-ready"],
+    "done":               [],
+    "halted":             ["dev-ready", "in-dev", "blocked"]
+  },
+  "agent_permissions": {
+    "pm-agent":       { "can_create": true,  "transitions": ["new→groomed", "groomed→dev-ready"] },
+    "dev-agent":      { "can_create": false, "transitions": ["dev-ready→in-dev", "in-dev→review-ready", "in-dev→blocked", "blocked→in-dev", "changes-requested→in-dev"] },
+    "reviewer-agent": { "can_create": false, "transitions": ["review-ready→in-review", "in-review→test-ready", "in-review→changes-requested"] },
+    "test-agent":     { "can_create": true,  "transitions": ["test-ready→in-test", "in-test→done", "in-test→dev-ready"] },
+    "human":          { "can_create": true,  "transitions": ["any→halted", "halted→any", "any→blocked", "groomed→dev-ready"] }
+  },
+  "human_approval_required": ["groomed→dev-ready"],
+  "wip_limits": { "in-dev": 1, "in-review": 1, "in-test": 1 },
+  "branching": {
+    "convention": "feat/TICKET-XXX-short-title | fix/BUG-XXX-short-title",
+    "main_protected": true,
+    "merge_via": "reviewer-agent or human override"
+  },
+  "sprint_lifecycle": {
+    "planning":  { "next": ["active"],  "requires": "human_approval" },
+    "active":    { "next": ["review", "halted"],  "requires": "all_tickets_done_or_timebox_expired" },
+    "halted":    { "next": ["active"],  "requires": "human_approval" },
+    "review":    { "next": ["retro"],   "requires": "human_present" },
+    "retro":     { "next": ["closed"],  "requires": "human_present" },
+    "closed":    { "next": [],          "triggers": "next_sprint_planning" }
+  },
+  "earned_autonomy": {
+    "description": "Human oversight decays as agents prove reliable. Tracked per agent per action type.",
+    "review_override": {
+      "week_1": "human reviews every PR before merge",
+      "month_1": "human reviews every 3rd PR",
+      "month_3": "human spot-checks weekly",
+      "month_6": "human audits weekly merge log"
+    },
+    "ticket_grooming": {
+      "week_1": "human approves every ticket",
+      "month_1": "human approves in batch",
+      "month_3": "PM proposes, human approves batch",
+      "month_6": "PM auto-grooms, human audits"
+    },
+    "bug_triage": {
+      "week_1": "human triages all bugs",
+      "month_1": "PM proposes, human confirms",
+      "month_3": "PM auto-triages, human spot-checks"
+    },
+    "never_automated": ["sprint_planning", "sprint_review", "retrospective", "deploy_decision", "blocker_resolution"]
+  }
+}

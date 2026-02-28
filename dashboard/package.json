@@ -1,0 +1,14 @@
+{
+  "name": "swarmboard-dashboard",
+  "version": "1.0.0",
+  "description": "SwarmBoard — Multi-agent sprint board dashboard",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "chokidar": "^3.6.0",
+    "express": "^4.21.0",
+    "node-pty": "^1.1.0"
+  }
+}

@@ -1,0 +1,771 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Board Dashboard — Demo Deck</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: #080a0f;
+    color: #e5e7eb;
+    overflow: hidden;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  .slide {
+    display: none;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    width: 100vw;
+    padding: 60px 80px;
+    position: relative;
+  }
+  .slide.active { display: flex; }
+
+  /* Navigation */
+  .nav {
+    position: fixed;
+    bottom: 30px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    z-index: 100;
+    background: rgba(15,18,25,0.9);
+    padding: 10px 20px;
+    border-radius: 30px;
+    border: 1px solid #1f2937;
+    backdrop-filter: blur(10px);
+  }
+  .nav button {
+    background: #1f2937;
+    color: #e5e7eb;
+    border: none;
+    padding: 8px 18px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 14px;
+    transition: background 0.2s;
+  }
+  .nav button:hover { background: #374151; }
+  .nav button:disabled { opacity: 0.3; cursor: default; }
+  .nav .counter {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    color: #6b7280;
+    min-width: 50px;
+    text-align: center;
+  }
+
+  /* Dots */
+  .dots {
+    display: flex;
+    gap: 6px;
+  }
+  .dots span {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #374151;
+    transition: all 0.3s;
+    cursor: pointer;
+  }
+  .dots span.active { background: #f59e0b; transform: scale(1.3); }
+
+  /* Slide number */
+  .slide-number {
+    position: absolute;
+    top: 30px;
+    right: 40px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    color: #374151;
+  }
+
+  /* Typography */
+  h1 { font-size: 52px; font-weight: 700; line-height: 1.2; margin-bottom: 20px; }
+  h2 { font-size: 38px; font-weight: 600; line-height: 1.3; margin-bottom: 24px; }
+  h3 { font-size: 24px; font-weight: 500; color: #9ca3af; margin-bottom: 16px; }
+  p  { font-size: 20px; line-height: 1.6; color: #9ca3af; max-width: 800px; }
+  .subtitle { font-size: 22px; color: #6b7280; margin-top: 8px; }
+
+  /* Accent colors */
+  .accent { color: #f59e0b; }
+  .green  { color: #22c55e; }
+  .blue   { color: #3b82f6; }
+  .purple { color: #8b5cf6; }
+  .red    { color: #ef4444; }
+  .cyan   { color: #06b6d4; }
+
+  /* Layout helpers */
+  .center { text-align: center; }
+  .left   { text-align: left; align-items: flex-start; }
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 40px;
+    width: 100%;
+    max-width: 1100px;
+    margin-top: 20px;
+  }
+  .grid-3 {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 30px;
+    width: 100%;
+    max-width: 1100px;
+    margin-top: 20px;
+  }
+  .grid-4 {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr 1fr;
+    gap: 24px;
+    width: 100%;
+    max-width: 1100px;
+    margin-top: 20px;
+  }
+
+  /* Cards */
+  .card {
+    background: #0f1219;
+    border: 1px solid #1f2937;
+    border-radius: 12px;
+    padding: 28px;
+    text-align: left;
+  }
+  .card h4 {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .card p {
+    font-size: 15px;
+    color: #6b7280;
+    line-height: 1.5;
+  }
+  .card .icon {
+    font-size: 32px;
+    margin-bottom: 12px;
+    display: block;
+  }
+
+  /* Agent cards */
+  .agent-card {
+    background: #0f1219;
+    border-radius: 12px;
+    padding: 24px;
+    text-align: center;
+    border: 2px solid #1f2937;
+  }
+  .agent-card .role {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .agent-card .name {
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 12px;
+  }
+  .agent-card .desc {
+    font-size: 14px;
+    color: #6b7280;
+    line-height: 1.5;
+  }
+  .agent-card.pm   { border-color: #3b82f6; }
+  .agent-card.dev  { border-color: #f59e0b; }
+  .agent-card.rev  { border-color: #8b5cf6; }
+  .agent-card.test { border-color: #06b6d4; }
+
+  /* State machine */
+  .state-flow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: center;
+    margin-top: 20px;
+  }
+  .state-pill {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    padding: 6px 14px;
+    border-radius: 20px;
+    background: #1f2937;
+    white-space: nowrap;
+  }
+  .state-arrow {
+    color: #374151;
+    font-size: 18px;
+  }
+
+  /* Bullet list */
+  .bullets {
+    list-style: none;
+    text-align: left;
+    max-width: 800px;
+  }
+  .bullets li {
+    font-size: 18px;
+    line-height: 1.7;
+    color: #9ca3af;
+    padding-left: 24px;
+    position: relative;
+    margin-bottom: 8px;
+  }
+  .bullets li::before {
+    content: '›';
+    position: absolute;
+    left: 0;
+    color: #f59e0b;
+    font-weight: 700;
+  }
+
+  /* Code block */
+  .code-block {
+    background: #0f1219;
+    border: 1px solid #1f2937;
+    border-radius: 10px;
+    padding: 24px 28px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    line-height: 1.7;
+    color: #9ca3af;
+    text-align: left;
+    max-width: 700px;
+    width: 100%;
+    margin-top: 16px;
+  }
+  .code-block .comment { color: #4b5563; }
+  .code-block .cmd { color: #22c55e; }
+  .code-block .flag { color: #f59e0b; }
+
+  /* Kanban mockup */
+  .kanban {
+    display: flex;
+    gap: 12px;
+    width: 100%;
+    max-width: 1100px;
+    margin-top: 20px;
+    overflow-x: auto;
+  }
+  .kanban-col {
+    flex: 1;
+    min-width: 120px;
+    background: #0f1219;
+    border-radius: 10px;
+    padding: 12px;
+  }
+  .kanban-col .col-title {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: #6b7280;
+    margin-bottom: 10px;
+    text-align: center;
+  }
+  .kanban-ticket {
+    background: #1a1f2e;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    font-size: 11px;
+    border-left: 3px solid;
+  }
+  .kanban-ticket .tid {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: #f59e0b;
+  }
+  .kanban-ticket .ttitle {
+    font-size: 11px;
+    color: #9ca3af;
+    margin-top: 2px;
+  }
+
+  /* Tag */
+  .tag {
+    display: inline-block;
+    font-size: 12px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-weight: 500;
+    margin: 2px;
+  }
+  .tag.orange { background: rgba(245,158,11,0.15); color: #f59e0b; }
+  .tag.green  { background: rgba(34,197,94,0.15);  color: #22c55e; }
+  .tag.blue   { background: rgba(59,130,246,0.15);  color: #3b82f6; }
+  .tag.purple { background: rgba(139,92,246,0.15);  color: #8b5cf6; }
+  .tag.red    { background: rgba(239,68,68,0.15);   color: #ef4444; }
+  .tag.cyan   { background: rgba(6,182,212,0.15);   color: #06b6d4; }
+
+  /* Separator */
+  hr {
+    border: none;
+    border-top: 1px solid #1f2937;
+    width: 60px;
+    margin: 20px 0;
+  }
+
+  /* Keyboard hint */
+  .kbd-hint {
+    position: fixed;
+    bottom: 30px;
+    right: 40px;
+    font-size: 12px;
+    color: #374151;
+    z-index: 100;
+  }
+  .kbd-hint kbd {
+    background: #1f2937;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+</style>
+</head>
+<body>
+
+<!-- ====== SLIDE 1: Title ====== -->
+<div class="slide active center" id="s1">
+  <div class="slide-number">01</div>
+  <h3 style="color:#f59e0b; letter-spacing: 3px; text-transform: uppercase; font-size: 14px;">SwarmBoard</h3>
+  <h1>Multi-Agent<br><span class="accent">Sprint Board</span></h1>
+  <p class="subtitle">AI agents coordinating through a shared ticket board,<br>with full human oversight and control.</p>
+  <hr>
+  <p style="font-size: 15px; color: #374151; margin-top: 10px;">Dashboard Demo &mdash; Feb 2026</p>
+</div>
+
+<!-- ====== SLIDE 2: The Problem ====== -->
+<div class="slide center" id="s2">
+  <div class="slide-number">02</div>
+  <h3>The Problem</h3>
+  <h2>How do you coordinate <span class="accent">multiple AI agents</span><br>working on the same codebase?</h2>
+  <div class="grid-3" style="margin-top: 30px;">
+    <div class="card">
+      <span class="icon">🔀</span>
+      <h4>Conflicts</h4>
+      <p>Agents stepping on each other's work without coordination</p>
+    </div>
+    <div class="card">
+      <span class="icon">👁</span>
+      <h4>Visibility</h4>
+      <p>No way to see what agents are doing or intervene mid-flight</p>
+    </div>
+    <div class="card">
+      <span class="icon">🛑</span>
+      <h4>Control</h4>
+      <p>No emergency stop, no human override, no guardrails</p>
+    </div>
+  </div>
+</div>
+
+<!-- ====== SLIDE 3: The Solution ====== -->
+<div class="slide center" id="s3">
+  <div class="slide-number">03</div>
+  <h3>The Solution</h3>
+  <h2>A <span class="accent">sprint board</span> that agents read &amp; write,<br>with a <span class="green">dashboard</span> for human control</h2>
+  <div class="grid-2" style="margin-top: 30px;">
+    <div class="card">
+      <h4 class="accent">Shared State</h4>
+      <p><code style="color:#22c55e">board.json</code> is the single source of truth. All agents read it, claim tickets, and update status through it.</p>
+    </div>
+    <div class="card">
+      <h4 class="green">Blackboard Signals</h4>
+      <p><code style="color:#22c55e">blackboard.md</code> lets agents broadcast findings, blockers, and decisions to each other.</p>
+    </div>
+    <div class="card">
+      <h4 class="blue">Ticket State Machine</h4>
+      <p>11 states with enforced transitions. No skipping steps. Branch per ticket. Reviewer merges.</p>
+    </div>
+    <div class="card">
+      <h4 class="purple">Human Override</h4>
+      <p>Move any ticket to any state. Halt all agents instantly. Full authority at all times.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ====== SLIDE 4: Agents ====== -->
+<div class="slide center" id="s4">
+  <div class="slide-number">04</div>
+  <h3>Four Agents, Four Roles</h3>
+  <h2>Each agent runs in its own <span class="accent">Claude Code</span> session</h2>
+  <div class="grid-4" style="margin-top: 30px;">
+    <div class="agent-card pm">
+      <div class="role blue">PM</div>
+      <div class="name">Planner</div>
+      <div class="desc">Reads the spec, grooms tickets, sets acceptance criteria and priorities</div>
+      <div style="margin-top:12px">
+        <span class="tag blue">new &rarr; groomed</span>
+      </div>
+    </div>
+    <div class="agent-card dev">
+      <div class="role accent">DEV</div>
+      <div class="name">Builder</div>
+      <div class="desc">Claims tickets, creates feature branches, writes code and commits</div>
+      <div style="margin-top:12px">
+        <span class="tag orange">dev-ready &rarr; review-ready</span>
+      </div>
+    </div>
+    <div class="agent-card rev">
+      <div class="role purple">REVIEWER</div>
+      <div class="name">Gatekeeper</div>
+      <div class="desc">Reviews PRs, requests changes or approves, merges to main</div>
+      <div style="margin-top:12px">
+        <span class="tag purple">review-ready &rarr; test-ready</span>
+      </div>
+    </div>
+    <div class="agent-card test">
+      <div class="role cyan">QA</div>
+      <div class="name">Tester</div>
+      <div class="desc">Writes and runs tests, files bug tickets, marks tickets done</div>
+      <div style="margin-top:12px">
+        <span class="tag cyan">test-ready &rarr; done</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ====== SLIDE 5: State Machine ====== -->
+<div class="slide center" id="s5">
+  <div class="slide-number">05</div>
+  <h3>Ticket Lifecycle</h3>
+  <h2>11 states, <span class="accent">enforced transitions</span></h2>
+  <div class="state-flow">
+    <span class="state-pill" style="border:1px solid #6b7280;">new</span>
+    <span class="state-arrow">&rarr;</span>
+    <span class="state-pill" style="border:1px solid #3b82f6;">groomed</span>
+    <span class="state-arrow">&rarr;</span>
+    <span class="state-pill" style="border:1px solid #22c55e;">dev-ready</span>
+    <span class="state-arrow">&rarr;</span>
+    <span class="state-pill" style="border:1px solid #f59e0b;">in-dev</span>
+    <span class="state-arrow">&rarr;</span>
+    <span class="state-pill" style="border:1px solid #f59e0b;">review-ready</span>
+    <span class="state-arrow">&rarr;</span>
+    <span class="state-pill" style="border:1px solid #8b5cf6;">in-review</span>
+    <span class="state-arrow">&rarr;</span>
+    <span class="state-pill" style="border:1px solid #06b6d4;">test-ready</span>
+    <span class="state-arrow">&rarr;</span>
+    <span class="state-pill" style="border:1px solid #06b6d4;">in-test</span>
+    <span class="state-arrow">&rarr;</span>
+    <span class="state-pill" style="border:1px solid #22c55e;">done</span>
+  </div>
+  <div style="margin-top: 30px; display: flex; gap: 20px; flex-wrap: wrap; justify-content: center;">
+    <span class="tag red">blocked</span>
+    <span class="tag red">changes-requested</span>
+    <span class="tag orange">bug &rarr; new ticket</span>
+  </div>
+  <ul class="bullets" style="margin-top: 30px;">
+    <li><strong>Human gate:</strong> groomed &rarr; dev-ready requires explicit approval</li>
+    <li><strong>Branch per ticket:</strong> <code style="color:#22c55e">feat/TICKET-001-title</code> &mdash; no direct main commits</li>
+    <li><strong>Only reviewer merges</strong> PRs to main (or human override)</li>
+    <li><strong>Bugs create new tickets</strong> linked to the parent</li>
+  </ul>
+</div>
+
+<!-- ====== SLIDE 6: Dashboard Overview ====== -->
+<div class="slide center" id="s6">
+  <div class="slide-number">06</div>
+  <h3>Dashboard</h3>
+  <h2>Real-time <span class="accent">control center</span> at <code style="color:#22c55e">localhost:3456</code></h2>
+  <div class="grid-2" style="margin-top: 20px;">
+    <div>
+      <div class="card" style="margin-bottom: 16px;">
+        <h4 class="accent">Sprint Board Tab</h4>
+        <p>Kanban swimlanes for all 11 statuses. Click any ticket for details, move, approve, or block.</p>
+      </div>
+      <div class="card">
+        <h4 class="green">Blackboard Tab</h4>
+        <p>Live signal feed — findings, decisions, blockers, handoffs. Color-coded by type.</p>
+      </div>
+    </div>
+    <div>
+      <div class="card" style="margin-bottom: 16px;">
+        <h4 class="blue">Agent Logs Tab</h4>
+        <p>Per-agent and orchestrator logs. Timestamped, level-coded, auto-scrolling.</p>
+      </div>
+      <div class="card">
+        <h4 class="purple">Human Control Tab</h4>
+        <p>Approve tickets, create tickets, post signals, block, halt, and resume.</p>
+      </div>
+    </div>
+  </div>
+  <div style="margin-top: 24px; display: flex; gap: 16px; flex-wrap: wrap; justify-content: center;">
+    <span class="tag green">SSE live updates</span>
+    <span class="tag orange">Agent status bar</span>
+    <span class="tag blue">Progress tracking</span>
+    <span class="tag purple">Ticket modals</span>
+    <span class="tag red">Halt button</span>
+  </div>
+</div>
+
+<!-- ====== SLIDE 7: Agent Status Bar ====== -->
+<div class="slide center" id="s7">
+  <div class="slide-number">07</div>
+  <h3>Always-Visible Agent Bar</h3>
+  <h2>See <span class="accent">what every agent is doing</span> at a glance</h2>
+  <div class="grid-4" style="margin-top: 30px;">
+    <div class="card" style="border-left: 3px solid #3b82f6; text-align: center;">
+      <div style="font-size:12px; letter-spacing:1px; color:#3b82f6; font-weight:600;">PM</div>
+      <div style="font-size:11px; margin-top:6px;"><span class="tag green">idle</span></div>
+      <div style="font-size:11px; color:#4b5563; margin-top:8px;">No active ticket</div>
+    </div>
+    <div class="card" style="border-left: 3px solid #f59e0b; text-align: center;">
+      <div style="font-size:12px; letter-spacing:1px; color:#f59e0b; font-weight:600;">DEV</div>
+      <div style="font-size:11px; margin-top:6px;"><span class="tag orange">working</span></div>
+      <div style="font-family:'JetBrains Mono',monospace; font-size:11px; color:#f59e0b; margin-top:8px;">TICKET-003</div>
+      <div style="font-size:11px; color:#6b7280;">Add user auth flow</div>
+      <div style="font-size:10px; color:#4b5563; margin-top:4px;">4:32 elapsed</div>
+    </div>
+    <div class="card" style="border-left: 3px solid #8b5cf6; text-align: center;">
+      <div style="font-size:12px; letter-spacing:1px; color:#8b5cf6; font-weight:600;">REV</div>
+      <div style="font-size:11px; margin-top:6px;"><span class="tag purple">waiting</span></div>
+      <div style="font-size:11px; color:#4b5563; margin-top:8px;">Waiting for PRs</div>
+    </div>
+    <div class="card" style="border-left: 3px solid #06b6d4; text-align: center;">
+      <div style="font-size:12px; letter-spacing:1px; color:#06b6d4; font-weight:600;">QA</div>
+      <div style="font-size:11px; margin-top:6px;"><span class="tag cyan">working</span></div>
+      <div style="font-family:'JetBrains Mono',monospace; font-size:11px; color:#f59e0b; margin-top:8px;">TICKET-001</div>
+      <div style="font-size:11px; color:#6b7280;">Running tests</div>
+      <div style="font-size:10px; color:#4b5563; margin-top:4px;">1:15 elapsed</div>
+    </div>
+  </div>
+  <ul class="bullets" style="margin-top: 30px;">
+    <li>Start, stop, or restart any agent from the card</li>
+    <li>Click to expand and see last 10 log lines</li>
+    <li>Status: working, idle, waiting, blocked, stopped, error, rate-limited</li>
+    <li>Elapsed time counter for running agents</li>
+  </ul>
+</div>
+
+<!-- ====== SLIDE 8: Human Controls ====== -->
+<div class="slide center" id="s8">
+  <div class="slide-number">08</div>
+  <h3>Human Override</h3>
+  <h2>You are <span class="red">always in charge</span></h2>
+  <div class="grid-3" style="margin-top: 20px;">
+    <div class="card">
+      <h4>Interrupt Levels</h4>
+      <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 6px;">
+        <span class="tag green">Nudge &mdash; post finding</span>
+        <span class="tag orange">Redirect &mdash; reprioritize</span>
+        <span class="tag orange">Block &mdash; block ticket</span>
+        <span class="tag red">Override &mdash; force approve</span>
+        <span class="tag red">Recall &mdash; move to backlog</span>
+        <span class="tag red" style="background:rgba(239,68,68,0.3);">Halt &mdash; stop everything</span>
+      </div>
+    </div>
+    <div class="card">
+      <h4>Per-Ticket Actions</h4>
+      <p style="margin-top:8px;">
+        Approve groomed tickets<br>
+        Block with reason<br>
+        Move to ANY status<br>
+        Change priority<br>
+        View full history<br>
+        <span style="color:#ef4444;">Warning if agent assigned</span>
+      </p>
+    </div>
+    <div class="card">
+      <h4>Sprint Actions</h4>
+      <p style="margin-top:8px;">
+        <strong class="green">Start Sprint</strong> &mdash; bulk approve<br>
+        <strong class="blue">Auto-Dispatch</strong> &mdash; toggle ON/OFF<br>
+        <strong class="accent">Reset Sprint</strong> &mdash; revert all active tickets, back to planning<br>
+        <strong class="red">Halt</strong> &mdash; emergency stop<br>
+        <strong class="green">Resume</strong> &mdash; restore state<br>
+        <strong class="purple">Sprint Review</strong> &mdash; demo &amp; accept
+      </p>
+    </div>
+  </div>
+</div>
+
+<!-- ====== SLIDE 9: Safety ====== -->
+<div class="slide center" id="s9">
+  <div class="slide-number">09</div>
+  <h3>Safety &amp; Recovery</h3>
+  <h2>Built-in <span class="accent">guardrails</span> at every step</h2>
+  <div class="grid-2" style="margin-top: 30px;">
+    <div class="card">
+      <span class="icon">🔒</span>
+      <h4>Agent Guardrails</h4>
+      <ul class="bullets" style="margin-top: 8px;">
+        <li>WIP limit of 1 ticket per agent</li>
+        <li>Must claim before working</li>
+        <li>Cannot skip states</li>
+        <li>No direct commits to main</li>
+        <li>Halt signal stops all work</li>
+      </ul>
+    </div>
+    <div class="card">
+      <span class="icon">🔄</span>
+      <h4>Session Recovery</h4>
+      <ul class="bullets" style="margin-top: 8px;">
+        <li>Agents crash? Auto-detected via board.json</li>
+        <li>Next invocation gets recovery prompt</li>
+        <li>Branch field is the recovery anchor</li>
+        <li>Agent checks out existing branch &amp; resumes</li>
+        <li>No work lost, no duplicate branches</li>
+      </ul>
+    </div>
+    <div class="card">
+      <span class="icon">📋</span>
+      <h4>Audit Trail</h4>
+      <ul class="bullets" style="margin-top: 8px;">
+        <li>Every state change logged in ticket history</li>
+        <li>Append-only files in <code style="color:#22c55e">.agent-board/history/</code></li>
+        <li>Agent logs preserved per-session</li>
+        <li>Blackboard signals timestamped</li>
+      </ul>
+    </div>
+    <div class="card">
+      <span class="icon">🛡</span>
+      <h4>Human Authority</h4>
+      <ul class="bullets" style="margin-top: 8px;">
+        <li>Move ANY ticket to ANY status</li>
+        <li>Halt stops all agents instantly</li>
+        <li>Moving ticket warns only when agent is actively working</li>
+        <li>Confirmation dialog before destructive actions</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ====== SLIDE 10: How to Run ====== -->
+<div class="slide center" id="s10">
+  <div class="slide-number">10</div>
+  <h3>Getting Started</h3>
+  <h2>Two ways to <span class="accent">run the board</span></h2>
+  <div class="grid-2" style="margin-top: 20px;">
+    <div>
+      <div class="card">
+        <h4 class="green">Option A: Dashboard (recommended)</h4>
+        <div class="code-block" style="margin-top: 12px;">
+          <span class="cmd">cd</span> dashboard<br>
+          <span class="cmd">npm</span> install<br>
+          <span class="cmd">node</span> server.js<br>
+          <span class="comment"># Open http://localhost:3456</span><br>
+          <span class="comment"># Click: Start Sprint</span><br>
+          <span class="comment"># Toggle: Auto-Dispatch ON</span><br>
+          <span class="comment"># Agents spawn automatically</span>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="card">
+        <h4 class="blue">Option B: Manual Terminals</h4>
+        <div class="code-block" style="margin-top: 12px;">
+          <span class="comment"># Terminal 1 — PM</span><br>
+          <span class="cmd">claude</span> &gt; <span class="flag">/pm</span><br><br>
+          <span class="comment"># Terminal 2 — Dev</span><br>
+          <span class="cmd">claude</span> &gt; <span class="flag">/dev</span><br><br>
+          <span class="comment"># Terminal 3 — Reviewer</span><br>
+          <span class="cmd">claude</span> &gt; <span class="flag">/reviewer</span><br><br>
+          <span class="comment"># Terminal 4 — Test</span><br>
+          <span class="cmd">claude</span> &gt; <span class="flag">/test</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ====== SLIDE 11: Architecture ====== -->
+<div class="slide center" id="s11">
+  <div class="slide-number">11</div>
+  <h3>Under the Hood</h3>
+  <h2><span class="accent">File-based</span> coordination, zero database</h2>
+  <div class="code-block" style="max-width: 600px; margin-top: 20px;">
+    <span class="flag">.agent-board/</span><br>
+    ├── <span class="cmd">board.json</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment"># Single source of truth</span><br>
+    ├── <span class="cmd">blackboard.md</span>&nbsp;&nbsp;&nbsp;<span class="comment"># Cross-agent signals</span><br>
+    ├── <span class="cmd">schema.json</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment"># State machine + rules</span><br>
+    ├── <span class="flag">history/</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment"># Append-only audit log</span><br>
+    └── <span class="flag">sprints/</span><br>
+    &nbsp;&nbsp;&nbsp;&nbsp;└── <span class="cmd">current.json</span>&nbsp;<span class="comment"># Active sprint def</span>
+  </div>
+  <div style="margin-top: 24px; display: flex; gap: 16px; flex-wrap: wrap; justify-content: center;">
+    <span class="tag orange">Express.js server</span>
+    <span class="tag green">SSE live sync</span>
+    <span class="tag blue">Chokidar file watch</span>
+    <span class="tag purple">node-pty agents</span>
+    <span class="tag cyan">Single HTML SPA</span>
+  </div>
+</div>
+
+<!-- ====== SLIDE 12: End ====== -->
+<div class="slide center" id="s12">
+  <div class="slide-number">12</div>
+  <h3 style="color:#f59e0b; letter-spacing: 3px; text-transform: uppercase; font-size: 14px;">SwarmBoard</h3>
+  <h1>Questions?</h1>
+  <p class="subtitle">Try it: <code style="color:#22c55e">cd dashboard && node server.js</code></p>
+  <hr>
+  <div style="margin-top: 20px; display: flex; gap: 20px;">
+    <span class="tag blue">/pm</span>
+    <span class="tag orange">/dev</span>
+    <span class="tag purple">/reviewer</span>
+    <span class="tag cyan">/test</span>
+    <span class="tag green">/board</span>
+    <span class="tag red">/halt</span>
+  </div>
+</div>
+
+<!-- Navigation -->
+<div class="nav">
+  <button id="prev" onclick="go(-1)">&larr; Prev</button>
+  <div class="dots" id="dots"></div>
+  <div class="counter" id="counter">1 / 12</div>
+  <button id="next" onclick="go(1)">Next &rarr;</button>
+</div>
+
+<div class="kbd-hint">
+  <kbd>&larr;</kbd> <kbd>&rarr;</kbd> to navigate
+</div>
+
+<script>
+  const slides = document.querySelectorAll('.slide');
+  const total = slides.length;
+  let current = 0;
+
+  // Build dots
+  const dotsEl = document.getElementById('dots');
+  for (let i = 0; i < total; i++) {
+    const d = document.createElement('span');
+    d.onclick = () => goTo(i);
+    dotsEl.appendChild(d);
+  }
+
+  function goTo(n) {
+    slides[current].classList.remove('active');
+    current = Math.max(0, Math.min(total - 1, n));
+    slides[current].classList.add('active');
+    document.getElementById('counter').textContent = `${current + 1} / ${total}`;
+    document.getElementById('prev').disabled = current === 0;
+    document.getElementById('next').disabled = current === total - 1;
+    dotsEl.querySelectorAll('span').forEach((d, i) => d.classList.toggle('active', i === current));
+  }
+
+  function go(dir) { goTo(current + dir); }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); go(1); }
+    if (e.key === 'ArrowLeft') { e.preventDefault(); go(-1); }
+    if (e.key === 'Home') { e.preventDefault(); goTo(0); }
+    if (e.key === 'End') { e.preventDefault(); goTo(total - 1); }
+  });
+
+  goTo(0);
+</script>
+</body>
+</html>
