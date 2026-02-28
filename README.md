@@ -105,6 +105,8 @@ SwarmBoard/
 
 SwarmBoard is framework-agnostic — it works with any language, stack, or project type. The agents read your spec and adapt.
 
+**First time?** Read the [Onboarding Guide](docs/ONBOARDING.md) for a detailed walkthrough.
+
 ## License
 
 MIT

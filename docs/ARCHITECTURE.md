@@ -649,7 +649,7 @@ Your project's own services (db, backend, frontend, etc.) may run in Docker or e
 
 ## Comparison with Kapi Sprints
 
-| Aspect | Kapi Sprints | Agent Board Kit |
+| Aspect | Kapi Sprints | SwarmBoard |
 |--------|-------------|-----------------|
 | **Coordination** | Blackboard signals (emergent) | Ticket state machine (explicit) + blackboard |
 | **Storage** | Scattered markdown files | Single board.json + schema.json |
@@ -659,23 +659,14 @@ Your project's own services (db, backend, frontend, etc.) may run in Docker or e
 | **Human control** | Edit markdown files | 6 interrupt levels + /halt + /board CLI |
 | **Sprint ceremonies** | Mentioned in skills | /review and /retro commands |
 | **Earned autonomy** | Conceptual (review rate decay) | Defined in schema.json with timeline |
-| **Dashboard** | Next.js web app (read-only) | /board CLI (Phase 1) + Next.js planned (Phase 2) |
+| **Dashboard** | Next.js web app (read-only) | Web dashboard (Express + SSE) with full human control |
 
-### What We Kept From Kapi
+### Design Influences from Kapi
 
-- Signal taxonomy (finding, decision, blocker, stuck, handoff, available)
-- Blackboard-first agent loop (read signals before picking work)
-- Earned autonomy concept (Sheridan's levels, review rate decay)
-- HITL design philosophy (Bainbridge's Irony)
+SwarmBoard builds on ideas from the Kapi Sprints framework:
 
-### What We Changed
-
-- Added structured ticket management (tickets solve what/who/when, blackboard solves cross-cutting)
-- Added schema enforcement (not just convention)
-- Added code review pipeline (reviewer agent between dev and test)
-- Added branching (no more shared main edits)
-- Added halt/interrupt system (6 levels from nudge to full stop)
-- Added sprint ceremonies as executable commands
+- **Kept:** Signal taxonomy (finding, decision, blocker, stuck, handoff, available), blackboard-first agent loop, earned autonomy concept (Sheridan's levels), HITL philosophy (Bainbridge's Irony)
+- **Added:** Structured ticket state machine, schema enforcement, code review pipeline (reviewer agent), branch-per-ticket workflow, 6-level human interrupt system, executable sprint ceremonies, web dashboard with full override authority
 
 ---
 
