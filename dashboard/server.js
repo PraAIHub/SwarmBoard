@@ -608,7 +608,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.listen(PORT, () => {
   console.log('');
   console.log('  ┌──────────────────────────────────────────────┐');
-  console.log('  │  Agent Board Dashboard                       │');
+  console.log('  │  SwarmBoard Dashboard                         │');
   console.log(`  │  http://localhost:${PORT}                      │`);
   console.log('  │                                              │');
   console.log(`  │  Watching: ${path.relative(process.cwd(), BOARD_DIR).padEnd(33)}│`);
