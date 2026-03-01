@@ -53,6 +53,20 @@ class Orchestrator {
     }
   }
 
+  // Detect and clean up zombie agent states on startup.
+  // If an agent is marked working/running but has no process, reset it.
+  cleanupZombies() {
+    for (const [role, agent] of Object.entries(this.agents)) {
+      if ((agent.status === 'working' || agent.status === 'running') && !agent.process) {
+        this.addLog('warn', `${role} was marked ${agent.status} but has no process — resetting to idle`);
+        this.pushAgentLog(role, `⚠ Zombie state detected — reset to idle on server startup`);
+        agent.status = 'idle';
+        agent.current = null;
+        agent.pid = null;
+      }
+    }
+  }
+
   // --- State Readers ---
 
   readBoard() {
