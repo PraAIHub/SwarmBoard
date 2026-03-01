@@ -1,6 +1,7 @@
 const pty = require('node-pty');
 const path = require('path');
 const fs = require('fs');
+const { execSync } = require('child_process');
 
 class Orchestrator {
   constructor(projectRoot) {
@@ -55,6 +56,7 @@ class Orchestrator {
 
   // Detect and clean up zombie agent states on startup.
   // If an agent is marked working/running but has no process, reset it.
+  // Also clean up any stale worktrees from previous runs.
   cleanupZombies() {
     for (const [role, agent] of Object.entries(this.agents)) {
       if ((agent.status === 'working' || agent.status === 'running') && !agent.process) {
@@ -63,8 +65,13 @@ class Orchestrator {
         agent.status = 'idle';
         agent.current = null;
         agent.pid = null;
+        agent.worktree = null;
       }
     }
+    // Prune stale worktrees left from crashed sessions
+    try {
+      execSync('git worktree prune', { cwd: this.projectRoot, stdio: 'pipe' });
+    } catch (e) { /* best effort */ }
   }
 
   // --- State Readers ---
@@ -261,7 +268,7 @@ Check what's already been done (git log, read the code) before making changes.
     let branchInstructions = '';
     if (role === 'dev-agent' && !work.resume) {
       branchInstructions = `
-CRITICAL: Before creating a feature branch, ALWAYS run: git checkout main && git pull origin main first. Then create your branch from main. Never branch from another feature branch.`;
+CRITICAL: You are running in a git worktree that starts from main (HEAD). Create your feature branch directly from the current commit — do NOT try to checkout main (it's checked out in the main working tree). Use: git checkout -b feat/TICKET-XXX-title`;
     }
 
     const board = this.readBoard();
@@ -305,7 +312,9 @@ This lets the human monitor your progress in real-time via the dashboard logs.
 Execute one iteration of your loop: read the blackboard, pick the highest priority ticket available to you, do the work, update board.json and history, then stop.
 
 IMPORTANT: Work in the project directory. Read real files. Make real changes. Commit to git if your role requires it.
-${branchInstructions}`;
+${branchInstructions}
+
+CRITICAL RESTRICTION: NEVER read, modify, create, or delete any files inside the dashboard/ directory. The dashboard/ directory contains the orchestrator and UI code that manages you. Modifying it could break the system. This applies to ALL agents, ALL roles, ALL circumstances. If a ticket seems to require dashboard changes, skip it and post a blocker signal.`;
   }
 
   stripAnsi(text) {
@@ -336,6 +345,71 @@ ${branchInstructions}`;
         this._logFlushTimers[role] = null;
         this.emit('agent-output', { role });
       }, 3000);
+    }
+  }
+
+  // --- Git Worktree Isolation ---
+
+  createWorktree(role, runId) {
+    const worktreeDir = path.join(this.projectRoot, '.claude', 'worktrees');
+    fs.mkdirSync(worktreeDir, { recursive: true });
+
+    const wtName = `${role}-${runId}`;
+    const wtPath = path.join(worktreeDir, wtName);
+    const branchName = `worktree-${wtName}`;
+
+    try {
+      execSync(`git worktree add "${wtPath}" -b "${branchName}" HEAD`, {
+        cwd: this.projectRoot,
+        stdio: 'pipe',
+      });
+
+      // Replace .agent-board/ in worktree with symlink to main project's copy.
+      // This ensures agents and orchestrator share the same board state.
+      const wtBoard = path.join(wtPath, '.agent-board');
+      const mainBoard = path.join(this.projectRoot, '.agent-board');
+      try {
+        fs.rmSync(wtBoard, { recursive: true, force: true });
+        fs.symlinkSync(mainBoard, wtBoard, 'dir');
+      } catch (e) {
+        this.addLog('warn', `Could not symlink .agent-board in worktree: ${e.message}`);
+      }
+
+      this.addLog('info', `Created worktree for ${role}: ${wtPath}`);
+      return wtPath;
+    } catch (err) {
+      this.addLog('error', `Failed to create worktree for ${role}: ${err.message}`);
+      return null;
+    }
+  }
+
+  removeWorktree(role, wtPath) {
+    if (!wtPath) return;
+    try {
+      // Get the branch name before removing
+      const branchName = execSync(`git -C "${wtPath}" rev-parse --abbrev-ref HEAD`, {
+        cwd: this.projectRoot,
+        stdio: 'pipe',
+      }).toString().trim();
+
+      execSync(`git worktree remove "${wtPath}" --force`, {
+        cwd: this.projectRoot,
+        stdio: 'pipe',
+      });
+
+      // Clean up the temporary branch
+      if (branchName.startsWith('worktree-')) {
+        try {
+          execSync(`git branch -D "${branchName}"`, {
+            cwd: this.projectRoot,
+            stdio: 'pipe',
+          });
+        } catch (e) { /* branch may already be gone */ }
+      }
+
+      this.addLog('info', `Removed worktree for ${role}: ${wtPath}`);
+    } catch (err) {
+      this.addLog('error', `Failed to remove worktree for ${role}: ${err.message}`);
     }
   }
 
@@ -399,6 +473,16 @@ ${branchInstructions}`;
     });
 
     try {
+      // Create an isolated git worktree so agents don't affect the main working tree
+      const worktreePath = this.createWorktree(role, runId);
+      if (!worktreePath) {
+        this.agents[role].status = 'error';
+        this.addLog('error', `Cannot start ${role} — worktree creation failed`);
+        this.emit('agent-update', this.getAgentStates());
+        return false;
+      }
+      this.agents[role].worktree = worktreePath;
+
       // claude -p requires a real TTY to produce output.
       // Use node-pty to spawn with a pseudo-terminal.
       // Write prompt to file, use launch-agent.py to read it safely
@@ -413,7 +497,7 @@ ${branchInstructions}`;
         name: 'xterm-256color',
         cols: 120,
         rows: 40,
-        cwd: this.projectRoot,
+        cwd: worktreePath,
         env: cleanEnv,
       });
 
@@ -546,11 +630,18 @@ ${branchInstructions}`;
           rateLimitHits,
         });
 
+        // Clean up the worktree after agent exits
+        const wtPath = this.agents[role].worktree;
+        if (wtPath) {
+          this.removeWorktree(role, wtPath);
+        }
+
         this.agents[role].process = null;
         this.agents[role].pid = null;
         this.agents[role].current = null;
         this.agents[role].runId = null;
         this.agents[role].startedAt = null;
+        this.agents[role].worktree = null;
 
         // Preserve rate-limited and stopped statuses — don't reset to idle
         if (this.agents[role].status !== 'rate-limited' && this.agents[role].status !== 'stopped') {
@@ -578,6 +669,12 @@ ${branchInstructions}`;
       return true;
 
     } catch (err) {
+      // Clean up worktree if spawn failed
+      const wtPath = this.agents[role].worktree;
+      if (wtPath) {
+        this.removeWorktree(role, wtPath);
+        this.agents[role].worktree = null;
+      }
       this.agents[role].status = 'error';
       this.addLog('error', `Failed to spawn ${role}: ${err.message}`);
       this.emit('agent-update', this.getAgentStates());

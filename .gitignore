@@ -3,3 +3,4 @@ node_modules/
 *-prompt.txt
 .agent-board/logs/*.log
 .DS_Store
+.claude/worktrees/
