@@ -842,6 +842,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Initialize project context, migrate if needed, start watcher
 initActiveProject();
 orch.repoint(ctx.projectDir);
+orch.cleanupZombies();
 startWatcher();
 
 app.listen(PORT, () => {
