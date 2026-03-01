@@ -339,7 +339,12 @@ ${branchInstructions}`;
     }
   }
 
-  async startAgent(role) {
+  async startAgent(role, { manual = false } = {}) {
+    // If manually stopped, only a manual start (dashboard button) can clear it
+    if (this.agents[role].status === 'stopped' && !manual) {
+      return false;
+    }
+
     if (this.isHalted()) {
       this.addLog('warn', `Cannot start ${role} — sprint is HALTED`);
       this.pushAgentLog(role, `⛔ Cannot start — sprint is HALTED. Use Resume to clear the halt signal.`);
@@ -547,8 +552,8 @@ ${branchInstructions}`;
         this.agents[role].runId = null;
         this.agents[role].startedAt = null;
 
-        // Preserve rate-limited status — don't reset to idle
-        if (this.agents[role].status !== 'rate-limited') {
+        // Preserve rate-limited and stopped statuses — don't reset to idle
+        if (this.agents[role].status !== 'rate-limited' && this.agents[role].status !== 'stopped') {
           this.agents[role].status = 'idle';
         }
 
@@ -610,6 +615,7 @@ ${branchInstructions}`;
     const priority = ['dev-agent', 'reviewer-agent', 'test-agent', 'pm-agent'];
 
     for (const role of priority) {
+      if (this.agents[role].status === 'stopped') continue;
       if (!this.agents[role].process && work[role].available.length > 0 && !work[role].blocked) {
         this.startAgent(role);
       }
