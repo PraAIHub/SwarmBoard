@@ -38,6 +38,7 @@
   .header-left { display: flex; align-items: center; gap: 12px; }
   .logo { width: 32px; height: 32px; border-radius: 6px; background: linear-gradient(135deg, #f59e0b, #ef4444); display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; }
   .project-name { font-size: 15px; font-weight: 700; }
+  #project-select option { background: var(--surface); color: var(--text); }
   .project-meta { font-size: 10px; color: var(--text-muted); }
   .connection { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 10px; color: var(--done); }
   .connection-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--done); animation: pulse 2s infinite; }
@@ -260,7 +261,12 @@
   <div class="header-left">
     <div class="logo">◈</div>
     <div>
-      <div class="project-name" id="project-name">Loading...</div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <select id="project-select" class="project-name" style="background:var(--surface);border:1px solid var(--border);color:var(--text);font-size:15px;font-weight:700;font-family:var(--sans);border-radius:6px;padding:2px 8px;cursor:pointer;max-width:200px;" onchange="switchProject(this.value)">
+          <option>Loading...</option>
+        </select>
+        <button onclick="showCreateProjectModal()" title="Create new project" style="background:transparent;border:1px solid var(--border);color:var(--text-muted);cursor:pointer;border-radius:6px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:16px;transition:all 0.15s;" onmouseover="this.style.color='#f59e0b';this.style.borderColor='#f59e0b'" onmouseout="this.style.color='#6b7280';this.style.borderColor='#1e293b'">+</button>
+      </div>
       <div class="project-meta" id="project-meta"></div>
     </div>
     <a href="/intro.html" target="_blank" style="margin-left:12px;font-size:12px;color:#6b7280;text-decoration:none;border:1px solid #1e293b;padding:4px 10px;border-radius:6px;transition:all 0.2s;" onmouseover="this.style.color='#f59e0b';this.style.borderColor='#f59e0b'" onmouseout="this.style.color='#6b7280';this.style.borderColor='#1e293b'">Intro</a>
@@ -311,6 +317,16 @@ let expandedAgent = null;   // Track which agent card is expanded
 let logFilter = 'all';      // Agent log filter
 let agentsCollapsed = false; // Track agents section collapse
 
+// Configurable refresh interval (persisted in localStorage)
+const REFRESH_OPTIONS = [5, 10, 15, 30, 60];
+function getRefreshInterval() {
+  return parseInt(localStorage.getItem('swarmboard-refresh') || '15') * 1000;
+}
+function setRefreshInterval(secs) {
+  localStorage.setItem('swarmboard-refresh', String(secs));
+  showToast(`Refresh interval set to ${secs}s`, 'success');
+}
+
 const LANES = [
   { key: 'groomed', label: 'BACKLOG', color: '#6b7280', desc: 'Awaiting approval' },
   { key: 'dev-ready', label: 'DEV READY', color: '#3b82f6', desc: 'Approved for development' },
@@ -333,33 +349,46 @@ function connectSSE() {
   const es = new EventSource('/api/events');
   const connEl = document.getElementById('connection');
 
-  es.onopen = () => { connEl.className = 'connection'; connEl.querySelector('span:last-child').textContent = 'LIVE'; };
+  es.onopen = () => { connEl.className = 'connection'; connEl.querySelector('span:last-child').textContent = 'LIVE'; fetchProjects(); };
   es.onerror = () => { connEl.className = 'connection disconnected'; connEl.querySelector('span:last-child').textContent = 'DISCONNECTED'; };
+
+  // Debounce helper — coalesces rapid events into one callback
+  const debounceTimers = {};
+  function debounced(key, fn, ms = 1000) {
+    clearTimeout(debounceTimers[key]);
+    debounceTimers[key] = setTimeout(fn, ms);
+  }
 
   es.addEventListener('state-update', e => {
     STATE = JSON.parse(e.data);
-    render();
+    debounced('state-update', () => render(), getRefreshInterval());
   });
 
   es.addEventListener('agent-update', e => {
-    // Refresh full state to pick up agent changes
-    fetchState();
+    if (STATE) {
+      const data = JSON.parse(e.data);
+      STATE.agents = Object.entries(data).map(([role, info]) => ({ role, ...info }));
+    }
+    debounced('agent-update', () => render(), getRefreshInterval());
   });
 
   es.addEventListener('orchestrator-log', e => {
-    // Append to orchestrator log in state and re-render logs tab
     if (STATE) {
       const entry = JSON.parse(e.data);
       if (!STATE.orchestratorLog) STATE.orchestratorLog = [];
       STATE.orchestratorLog.push(entry);
       if (STATE.orchestratorLog.length > 50) STATE.orchestratorLog.shift();
-      if (activeTab === 'logs') renderLogs();
     }
+    debounced('orch-log', () => { if (activeTab === 'logs') renderLogs(); }, getRefreshInterval());
   });
 
   es.addEventListener('agent-output', e => {
-    // Update agent log previews live
-    if (activeTab === 'logs') renderLogs();
+    debounced('agent-output', () => { if (activeTab === 'logs') renderLogs(); }, Math.min(getRefreshInterval(), 5000));
+  });
+
+  es.addEventListener('project-switch', e => {
+    fetchState();
+    fetchProjects();
   });
 
   es.addEventListener('rate-limit', e => {
@@ -417,9 +446,7 @@ function render() {
 }
 
 function renderHeader() {
-  const name = STATE.board?.project || 'Agent Board';
   const sprint = STATE.sprint;
-  document.getElementById('project-name').textContent = name;
   document.getElementById('project-meta').textContent = sprint ? `Sprint ${sprint.sprint} · ${sprint.goal?.substring(0, 80)}...` : '';
 }
 
@@ -843,6 +870,16 @@ function renderControl() {
           </div>
 
           <div class="action-group">
+            <div class="action-group-title">Dashboard Refresh</div>
+            <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;">
+              <select onchange="setRefreshInterval(this.value)" style="background:var(--bg-primary);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:12px;">
+                ${REFRESH_OPTIONS.map(s => `<option value="${s}" ${parseInt(localStorage.getItem('swarmboard-refresh') || '15') === s ? 'selected' : ''}>${s}s</option>`).join('')}
+              </select>
+              <span style="font-size:12px;color:var(--text-dim)">UI refresh interval (board + logs)</span>
+            </div>
+          </div>
+
+          <div class="action-group">
             <div class="action-group-title">Signals</div>
             <button class="action-btn" onclick="showSignalModal()">
               <span class="action-btn-icon">📡</span>
@@ -1241,6 +1278,146 @@ function showToast(msg, type = 'info') {
   setTimeout(() => { c.innerHTML = ''; }, 3000);
 }
 
+// ── Project Management ────────────────────────────────────────────────────────
+async function fetchProjects() {
+  try {
+    const res = await fetch('/api/projects');
+    const data = await res.json();
+    const select = document.getElementById('project-select');
+    const current = STATE?.activeProject || data.projects.find(p => p.active)?.name;
+    select.innerHTML = data.projects.map(p =>
+      `<option value="${p.name}" ${p.name === current ? 'selected' : ''}>${p.displayName || p.name}</option>`
+    ).join('');
+  } catch (e) {
+    console.error('Failed to fetch projects:', e);
+  }
+}
+
+async function switchProject(name) {
+  try {
+    const res = await fetch('/api/projects/switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(`Switched to ${name}`, 'success');
+      await fetchState();
+      await fetchProjects();
+    } else {
+      showToast(data.error || 'Switch failed', 'error');
+    }
+  } catch (e) {
+    showToast('Network error', 'error');
+  }
+}
+
+function showCreateProjectModal() {
+  const c = document.getElementById('modal-container');
+  c.innerHTML = `
+    <div class="modal-overlay" onclick="if(event.target===this)this.remove()">
+      <div class="modal input-modal" style="position:relative">
+        <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">&times;</button>
+        <h3>Create New Project</h3>
+        <div style="margin-top:16px">
+          <label>Project Name</label>
+          <input type="text" id="new-project-name" placeholder="my-project" pattern="[a-zA-Z0-9 _-]+" />
+          <label style="margin-top:8px">Spec (optional)</label>
+          <div id="spec-tabs" style="display:flex;gap:0;margin-bottom:8px;border-bottom:1px solid var(--border);">
+            <button class="spec-tab active" data-tab="paste" onclick="switchSpecTab('paste')" style="padding:6px 14px;font-size:11px;border:none;border-bottom:2px solid var(--high);background:transparent;color:var(--text);cursor:pointer;font-weight:600;">Paste</button>
+            <button class="spec-tab" data-tab="upload" onclick="switchSpecTab('upload')" style="padding:6px 14px;font-size:11px;border:none;border-bottom:2px solid transparent;background:transparent;color:var(--text-dim);cursor:pointer;">Upload</button>
+          </div>
+          <div id="spec-panel-paste">
+            <textarea id="new-project-spec-content" placeholder="Paste your spec markdown here..." style="min-height:120px;font-family:var(--mono);font-size:11px;"></textarea>
+          </div>
+          <div id="spec-panel-upload" style="display:none;">
+            <div id="spec-drop-zone" style="border:2px dashed var(--border);border-radius:8px;padding:24px;text-align:center;cursor:pointer;transition:border-color 0.2s;"
+              ondragover="event.preventDefault();this.style.borderColor='var(--high)'"
+              ondragleave="this.style.borderColor='var(--border)'"
+              ondrop="handleSpecDrop(event)"
+              onclick="document.getElementById('spec-file-input').click()">
+              <div style="font-size:24px;margin-bottom:6px;">📄</div>
+              <div style="font-size:12px;color:var(--text-dim);">Drop a .md file here or click to browse</div>
+              <div id="spec-file-name" style="font-size:11px;color:var(--high);margin-top:6px;display:none;"></div>
+            </div>
+            <input type="file" id="spec-file-input" accept=".md,.markdown,.txt" style="display:none" onchange="handleSpecFile(this.files[0])" />
+          </div>
+          <div class="btn-row">
+            <button class="btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+            <button class="btn-primary" onclick="createProject()">Create</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('new-project-name').focus();
+}
+
+function switchSpecTab(tab) {
+  document.querySelectorAll('#spec-tabs .spec-tab').forEach(t => {
+    const isActive = t.dataset.tab === tab;
+    t.style.borderBottomColor = isActive ? 'var(--high)' : 'transparent';
+    t.style.color = isActive ? 'var(--text)' : 'var(--text-dim)';
+    t.style.fontWeight = isActive ? '600' : '400';
+  });
+  ['paste', 'upload'].forEach(p => {
+    document.getElementById('spec-panel-' + p).style.display = p === tab ? '' : 'none';
+  });
+}
+
+function handleSpecDrop(e) {
+  e.preventDefault();
+  e.currentTarget.style.borderColor = 'var(--border)';
+  const file = e.dataTransfer.files[0];
+  if (file) handleSpecFile(file);
+}
+
+function handleSpecFile(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    window._specFileContent = reader.result;
+    const nameEl = document.getElementById('spec-file-name');
+    nameEl.textContent = file.name;
+    nameEl.style.display = '';
+    document.getElementById('spec-drop-zone').style.borderColor = 'var(--high)';
+  };
+  reader.readAsText(file);
+}
+
+async function createProject() {
+  const name = document.getElementById('new-project-name').value.trim();
+  if (!name) { showToast('Project name is required', 'error'); return; }
+
+  // Determine which spec tab is active
+  const activeTab = document.querySelector('#spec-tabs .spec-tab[style*="font-weight: 600"], #spec-tabs .spec-tab[style*="font-weight:600"]')?.dataset.tab || 'paste';
+  let specContent;
+  if (activeTab === 'paste') {
+    specContent = document.getElementById('new-project-spec-content')?.value.trim() || undefined;
+  } else if (activeTab === 'upload') {
+    specContent = window._specFileContent || undefined;
+  }
+
+  try {
+    const res = await fetch('/api/projects/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, specContent: specContent || undefined }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      document.querySelector('.modal-overlay')?.remove();
+      window._specFileContent = null;
+      showToast(`Project "${name}" created`, 'success');
+      await switchProject(data.name);
+    } else {
+      showToast(data.error || 'Create failed', 'error');
+    }
+  } catch (e) {
+    showToast('Network error', 'error');
+  }
+}
+
 // ── Tabs ─────────────────────────────────────────────────────────────────────
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
@@ -1255,6 +1432,7 @@ document.querySelectorAll('.tab').forEach(tab => {
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 fetchState();
+fetchProjects();
 connectSSE();
 </script>
 </body>

@@ -8,13 +8,144 @@ const app = express();
 app.use(express.json());
 
 // ── Config ──────────────────────────────────────────────────────────────────
-const BOARD_DIR = process.env.BOARD_DIR || path.resolve(__dirname, '..', '.agent-board');
-const BOARD_FILE = path.join(BOARD_DIR, 'board.json');
-const SCHEMA_FILE = path.join(BOARD_DIR, 'schema.json');
-const BLACKBOARD_FILE = path.join(BOARD_DIR, 'blackboard.md');
-const SPRINT_FILE = path.join(BOARD_DIR, 'sprints', 'current.json');
-const HISTORY_DIR = path.join(BOARD_DIR, 'history');
+const BASE_BOARD_DIR = process.env.BOARD_DIR || path.resolve(__dirname, '..', '.agent-board');
+const CONFIG_FILE = path.join(BASE_BOARD_DIR, 'config.json');
+const PROJECTS_DIR = path.join(BASE_BOARD_DIR, 'projects');
+const SCHEMA_FILE = path.join(BASE_BOARD_DIR, 'schema.json');
 const PORT = process.env.PORT || 3456;
+
+// Mutable context — all project-specific paths live here
+const ctx = {
+  projectName: null,
+  projectDir: null,
+  boardFile: null,
+  blackboardFile: null,
+  sprintFile: null,
+  historyDir: null,
+  logsDir: null,
+};
+
+function setActiveProject(name) {
+  ctx.projectName = name;
+  ctx.projectDir = path.join(PROJECTS_DIR, name);
+  ctx.boardFile = path.join(ctx.projectDir, 'board.json');
+  ctx.blackboardFile = path.join(ctx.projectDir, 'blackboard.md');
+  ctx.sprintFile = path.join(ctx.projectDir, 'sprints', 'current.json');
+  ctx.historyDir = path.join(ctx.projectDir, 'history');
+  ctx.logsDir = path.join(ctx.projectDir, 'logs');
+}
+
+function migrateIfNeeded() {
+  if (fs.existsSync(PROJECTS_DIR)) return; // already migrated
+  const oldBoard = path.join(BASE_BOARD_DIR, 'board.json');
+  if (!fs.existsSync(oldBoard)) return; // nothing to migrate
+
+  // Read project name from existing board.json
+  let name = 'MyProject';
+  try {
+    const board = JSON.parse(fs.readFileSync(oldBoard, 'utf-8'));
+    if (board.project) name = board.project;
+  } catch (e) { /* use default */ }
+
+  const dest = path.join(PROJECTS_DIR, name);
+  fs.mkdirSync(path.join(dest, 'sprints'), { recursive: true });
+  fs.mkdirSync(path.join(dest, 'history'), { recursive: true });
+  fs.mkdirSync(path.join(dest, 'logs'), { recursive: true });
+
+  // Move project-specific files
+  const filesToMove = [
+    ['board.json', 'board.json'],
+    ['blackboard.md', 'blackboard.md'],
+  ];
+  for (const [src, dst] of filesToMove) {
+    const srcPath = path.join(BASE_BOARD_DIR, src);
+    if (fs.existsSync(srcPath)) {
+      fs.renameSync(srcPath, path.join(dest, dst));
+    }
+  }
+
+  // Move sprints/current.json
+  const oldSprint = path.join(BASE_BOARD_DIR, 'sprints', 'current.json');
+  if (fs.existsSync(oldSprint)) {
+    fs.renameSync(oldSprint, path.join(dest, 'sprints', 'current.json'));
+    // Remove old sprints dir if empty
+    try { fs.rmdirSync(path.join(BASE_BOARD_DIR, 'sprints')); } catch (e) { /* not empty */ }
+  }
+
+  // Move history files
+  const oldHistory = path.join(BASE_BOARD_DIR, 'history');
+  if (fs.existsSync(oldHistory)) {
+    for (const f of fs.readdirSync(oldHistory)) {
+      fs.renameSync(path.join(oldHistory, f), path.join(dest, 'history', f));
+    }
+    try { fs.rmdirSync(oldHistory); } catch (e) { /* not empty */ }
+  }
+
+  // Move logs
+  const oldLogs = path.join(BASE_BOARD_DIR, 'logs');
+  if (fs.existsSync(oldLogs)) {
+    for (const f of fs.readdirSync(oldLogs)) {
+      fs.renameSync(path.join(oldLogs, f), path.join(dest, 'logs', f));
+    }
+    try { fs.rmdirSync(oldLogs); } catch (e) { /* not empty */ }
+  }
+
+  // Write config
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify({ activeProject: name }, null, 2));
+  console.log(`  [migrate] Moved existing board into projects/${name}/`);
+}
+
+function initActiveProject() {
+  migrateIfNeeded();
+
+  // Read config for last active project
+  let activeName = null;
+  try {
+    const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+    activeName = cfg.activeProject;
+  } catch (e) { /* no config yet */ }
+
+  // If projects dir exists, pick active or first available
+  if (fs.existsSync(PROJECTS_DIR)) {
+    const projects = fs.readdirSync(PROJECTS_DIR).filter(f =>
+      fs.statSync(path.join(PROJECTS_DIR, f)).isDirectory()
+    );
+    if (activeName && projects.includes(activeName)) {
+      setActiveProject(activeName);
+    } else if (projects.length > 0) {
+      setActiveProject(projects[0]);
+    }
+  }
+
+  // If no project loaded, create a default scaffold
+  if (!ctx.projectName) {
+    const name = 'MyProject';
+    scaffoldProject(name);
+    setActiveProject(name);
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify({ activeProject: name }, null, 2));
+  }
+}
+
+function scaffoldProject(name, spec, displayName) {
+  const dir = path.join(PROJECTS_DIR, name);
+  fs.mkdirSync(path.join(dir, 'sprints'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'history'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'logs'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'board.json'), JSON.stringify({
+    project: displayName || name,
+    spec: spec || 'SPEC.md',
+    tickets: [],
+    nextId: 1
+  }, null, 2));
+  fs.writeFileSync(path.join(dir, 'blackboard.md'), `# Blackboard — ${name}\n\nCross-cutting signals, findings, and decisions.\n`);
+  fs.writeFileSync(path.join(dir, 'sprints', 'current.json'), JSON.stringify({
+    sprint: 1,
+    goal: '',
+    status: 'planning',
+    started: null,
+    ended: null
+  }, null, 2));
+}
 
 // ── Orchestrator ────────────────────────────────────────────────────────────
 const orch = new Orchestrator(path.resolve(__dirname, '..'));
@@ -55,10 +186,10 @@ function readText(filepath) {
 }
 
 function getFullState() {
-  const board = readJSON(BOARD_FILE);
+  const board = readJSON(ctx.boardFile);
   const schema = readJSON(SCHEMA_FILE);
-  const sprint = readJSON(SPRINT_FILE);
-  const blackboard = readText(BLACKBOARD_FILE);
+  const sprint = readJSON(ctx.sprintFile);
+  const blackboard = readText(ctx.blackboardFile);
   
   // Parse blackboard signals
   const signals = [];
@@ -125,6 +256,7 @@ function getFullState() {
     raw_blackboard: blackboard,
     autoMode: orch.autoMode,
     orchestratorLog: orch.log.slice(-50),
+    activeProject: ctx.projectName,
   };
 }
 
@@ -154,7 +286,7 @@ app.get('/api/events', (req, res) => {
 // Approve ticket (groomed → dev-ready)
 app.post('/api/actions/approve', (req, res) => {
   const { ticketId } = req.body;
-  const board = readJSON(BOARD_FILE);
+  const board = readJSON(ctx.boardFile);
   if (!board) return res.status(500).json({ error: 'Cannot read board.json' });
   
   const ticket = board.tickets.find(t => t.id === ticketId);
@@ -171,7 +303,7 @@ app.post('/api/actions/approve', (req, res) => {
   });
   board.last_updated = new Date().toISOString();
   
-  fs.writeFileSync(BOARD_FILE, JSON.stringify(board, null, 2));
+  fs.writeFileSync(ctx.boardFile, JSON.stringify(board, null, 2));
   writeHistory(ticketId, 'groomed', 'dev-ready', 'Approved by human via dashboard');
   res.json({ ok: true, ticket });
 });
@@ -179,7 +311,7 @@ app.post('/api/actions/approve', (req, res) => {
 // Block ticket
 app.post('/api/actions/block', (req, res) => {
   const { ticketId, reason } = req.body;
-  const board = readJSON(BOARD_FILE);
+  const board = readJSON(ctx.boardFile);
   if (!board) return res.status(500).json({ error: 'Cannot read board.json' });
   
   const ticket = board.tickets.find(t => t.id === ticketId);
@@ -196,11 +328,11 @@ app.post('/api/actions/block', (req, res) => {
   });
   board.last_updated = new Date().toISOString();
   
-  fs.writeFileSync(BOARD_FILE, JSON.stringify(board, null, 2));
+  fs.writeFileSync(ctx.boardFile, JSON.stringify(board, null, 2));
   
   // Also post to blackboard
   const signal = `\n## [blocker] ${ticket.title} blocked — human — ${new Date().toISOString()}\n${reason || 'Blocked via dashboard'}\nAffects: ${ticketId}\n`;
-  fs.appendFileSync(BLACKBOARD_FILE, signal);
+  fs.appendFileSync(ctx.blackboardFile, signal);
   
   writeHistory(ticketId, prevStatus, 'blocked', `Blocked by human: ${reason}`);
   res.json({ ok: true, ticket });
@@ -209,8 +341,8 @@ app.post('/api/actions/block', (req, res) => {
 // Halt sprint
 app.post('/api/actions/halt', (req, res) => {
   const { reason } = req.body;
-  const board = readJSON(BOARD_FILE);
-  const sprint = readJSON(SPRINT_FILE);
+  const board = readJSON(ctx.boardFile);
+  const sprint = readJSON(ctx.sprintFile);
   if (!board) return res.status(500).json({ error: 'Cannot read board.json' });
   
   const haltedTickets = [];
@@ -231,16 +363,16 @@ app.post('/api/actions/halt', (req, res) => {
     }
   });
   board.last_updated = new Date().toISOString();
-  fs.writeFileSync(BOARD_FILE, JSON.stringify(board, null, 2));
+  fs.writeFileSync(ctx.boardFile, JSON.stringify(board, null, 2));
   
   // Post halt signal
   const signal = `\n## [halt] SPRINT HALTED — human — ${new Date().toISOString()}\n${reason || 'Halted via dashboard'}\nAll agents must stop. Do not pick new work.\nAffects: ALL TICKETS\n`;
-  fs.appendFileSync(BLACKBOARD_FILE, signal);
+  fs.appendFileSync(ctx.blackboardFile, signal);
   
   // Update sprint status
   if (sprint) {
     sprint.status = 'halted';
-    fs.writeFileSync(SPRINT_FILE, JSON.stringify(sprint, null, 2));
+    fs.writeFileSync(ctx.sprintFile, JSON.stringify(sprint, null, 2));
   }
   
   // History
@@ -252,7 +384,7 @@ app.post('/api/actions/halt', (req, res) => {
     tickets_halted: haltedTickets,
     previous_states: previousStates
   };
-  const histFile = path.join(HISTORY_DIR, `${new Date().toISOString().replace(/[:.]/g, '-')}-sprint-halted.json`);
+  const histFile = path.join(ctx.historyDir, `${new Date().toISOString().replace(/[:.]/g, '-')}-sprint-halted.json`);
   fs.writeFileSync(histFile, JSON.stringify(haltHistory, null, 2));
   
   // Stop all orchestrator agents
@@ -265,21 +397,21 @@ app.post('/api/actions/halt', (req, res) => {
 app.post('/api/actions/signal', (req, res) => {
   const { type, title, detail, affects } = req.body;
   const signal = `\n## [${type}] ${title} — human — ${new Date().toISOString()}\n${detail || ''}\nAffects: ${affects || 'N/A'}\n`;
-  fs.appendFileSync(BLACKBOARD_FILE, signal);
+  fs.appendFileSync(ctx.blackboardFile, signal);
   res.json({ ok: true });
 });
 
 // Resume from halt
 app.post('/api/actions/resume', (req, res) => {
-  const board = readJSON(BOARD_FILE);
-  const sprint = readJSON(SPRINT_FILE);
+  const board = readJSON(ctx.boardFile);
+  const sprint = readJSON(ctx.sprintFile);
   if (!board) return res.status(500).json({ error: 'Cannot read board.json' });
   
   // Find the most recent halt history to get previous states
-  const histFiles = fs.readdirSync(HISTORY_DIR).filter(f => f.includes('sprint-halted')).sort().reverse();
+  const histFiles = fs.readdirSync(ctx.historyDir).filter(f => f.includes('sprint-halted')).sort().reverse();
   let previousStates = {};
   if (histFiles.length > 0) {
-    const haltData = readJSON(path.join(HISTORY_DIR, histFiles[0]));
+    const haltData = readJSON(path.join(ctx.historyDir, histFiles[0]));
     if (haltData) previousStates = haltData.previous_states || {};
   }
   
@@ -297,21 +429,43 @@ app.post('/api/actions/resume', (req, res) => {
     }
   });
   board.last_updated = new Date().toISOString();
-  fs.writeFileSync(BOARD_FILE, JSON.stringify(board, null, 2));
+  fs.writeFileSync(ctx.boardFile, JSON.stringify(board, null, 2));
   
   if (sprint) {
     sprint.status = 'active';
-    fs.writeFileSync(SPRINT_FILE, JSON.stringify(sprint, null, 2));
+    fs.writeFileSync(ctx.sprintFile, JSON.stringify(sprint, null, 2));
   }
   
   // Remove halt from blackboard
-  let bb = readText(BLACKBOARD_FILE);
+  let bb = readText(ctx.blackboardFile);
   bb = bb.replace(/\n## \[halt\][\s\S]*?(?=\n## \[|$)/g, '');
-  fs.writeFileSync(BLACKBOARD_FILE, bb);
+  fs.writeFileSync(ctx.blackboardFile, bb);
+
+  // Clear rate limit flag and reset agent statuses
+  orch.rateLimitState = { detected: false, resetInfo: null };
+  for (const role of Object.keys(orch.agents)) {
+    if (orch.agents[role].status === 'rate-limited' || orch.agents[role].status === 'stopped') {
+      orch.agents[role].status = 'idle';
+    }
+  }
 
   // Re-enable auto-dispatch
   orch.startAutoMode();
 
+  res.json({ ok: true });
+});
+
+// Clear rate limit flag (without resuming halted tickets)
+app.post('/api/actions/clear-rate-limit', (req, res) => {
+  orch.rateLimitState = { detected: false, resetInfo: null };
+  for (const role of Object.keys(orch.agents)) {
+    if (orch.agents[role].status === 'rate-limited') {
+      orch.agents[role].status = 'idle';
+    }
+  }
+  orch.addLog('info', 'Rate limit cleared by human');
+  orch.emit('agent-update', orch.getAgentStates());
+  if (orch.autoMode) orch.evaluateAndDispatch();
   res.json({ ok: true });
 });
 
@@ -320,7 +474,7 @@ app.post('/api/actions/move-ticket', (req, res) => {
   const { ticketId, toStatus, note } = req.body;
   if (!ticketId || !toStatus) return res.status(400).json({ error: 'ticketId and toStatus are required' });
 
-  const board = readJSON(BOARD_FILE);
+  const board = readJSON(ctx.boardFile);
   const schema = readJSON(SCHEMA_FILE);
   if (!board) return res.status(500).json({ error: 'Cannot read board.json' });
   if (!schema) return res.status(500).json({ error: 'Cannot read schema.json' });
@@ -354,7 +508,7 @@ app.post('/api/actions/move-ticket', (req, res) => {
     note: note || 'Moved via dashboard'
   });
   board.last_updated = new Date().toISOString();
-  fs.writeFileSync(BOARD_FILE, JSON.stringify(board, null, 2));
+  fs.writeFileSync(ctx.boardFile, JSON.stringify(board, null, 2));
   writeHistory(ticketId, fromStatus, toStatus, note || 'Moved via dashboard');
 
   res.json({ ok: true, ticket });
@@ -362,8 +516,8 @@ app.post('/api/actions/move-ticket', (req, res) => {
 
 // Reset sprint (back to planning)
 app.post('/api/actions/reset-sprint', (req, res) => {
-  const board = readJSON(BOARD_FILE);
-  const sprint = readJSON(SPRINT_FILE);
+  const board = readJSON(ctx.boardFile);
+  const sprint = readJSON(ctx.sprintFile);
   if (!board) return res.status(500).json({ error: 'Cannot read board.json' });
   if (!sprint) return res.status(500).json({ error: 'Cannot read sprint file' });
 
@@ -391,10 +545,10 @@ app.post('/api/actions/reset-sprint', (req, res) => {
     }
   });
   board.last_updated = new Date().toISOString();
-  fs.writeFileSync(BOARD_FILE, JSON.stringify(board, null, 2));
+  fs.writeFileSync(ctx.boardFile, JSON.stringify(board, null, 2));
 
   sprint.status = 'planning';
-  fs.writeFileSync(SPRINT_FILE, JSON.stringify(sprint, null, 2));
+  fs.writeFileSync(ctx.sprintFile, JSON.stringify(sprint, null, 2));
 
   orch.addLog('info', `Sprint reset to planning — ${reverted.length} tickets reverted to groomed`);
   res.json({ ok: true, reverted });
@@ -403,7 +557,7 @@ app.post('/api/actions/reset-sprint', (req, res) => {
 // Reprioritize
 app.post('/api/actions/reprioritize', (req, res) => {
   const { ticketId, priority } = req.body;
-  const board = readJSON(BOARD_FILE);
+  const board = readJSON(ctx.boardFile);
   if (!board) return res.status(500).json({ error: 'Cannot read board.json' });
   
   const ticket = board.tickets.find(t => t.id === ticketId);
@@ -419,7 +573,7 @@ app.post('/api/actions/reprioritize', (req, res) => {
     note: `Priority changed from ${prev} to ${priority} via dashboard`
   });
   board.last_updated = new Date().toISOString();
-  fs.writeFileSync(BOARD_FILE, JSON.stringify(board, null, 2));
+  fs.writeFileSync(ctx.boardFile, JSON.stringify(board, null, 2));
   res.json({ ok: true, ticket });
 });
 
@@ -427,16 +581,16 @@ app.post('/api/actions/reprioritize', (req, res) => {
 
 // Start sprint: planning → active, auto-approve groomed tickets, enable dispatch
 app.post('/api/actions/start-sprint', (req, res) => {
-  const sprint = readJSON(SPRINT_FILE);
+  const sprint = readJSON(ctx.sprintFile);
   if (!sprint) return res.status(500).json({ error: 'Cannot read sprint file' });
   if (sprint.status !== 'planning') return res.status(400).json({ error: `Sprint is ${sprint.status}, not planning` });
 
   // Move sprint to active
   sprint.status = 'active';
-  fs.writeFileSync(SPRINT_FILE, JSON.stringify(sprint, null, 2));
+  fs.writeFileSync(ctx.sprintFile, JSON.stringify(sprint, null, 2));
 
   // Auto-approve all groomed tickets
-  const board = readJSON(BOARD_FILE);
+  const board = readJSON(ctx.boardFile);
   const approved = [];
   if (board) {
     board.tickets.forEach(t => {
@@ -454,7 +608,7 @@ app.post('/api/actions/start-sprint', (req, res) => {
       }
     });
     board.last_updated = new Date().toISOString();
-    fs.writeFileSync(BOARD_FILE, JSON.stringify(board, null, 2));
+    fs.writeFileSync(ctx.boardFile, JSON.stringify(board, null, 2));
   }
 
   // Enable auto-dispatch
@@ -495,7 +649,7 @@ app.post('/api/actions/dispatch/toggle', (req, res) => {
 // Get full agent log from disk
 app.get('/api/agents/:role/log', (req, res) => {
   const { role } = req.params;
-  const logFile = path.join(BOARD_DIR, 'logs', `${role}.log`);
+  const logFile = path.join(ctx.logsDir, `${role}.log`);
   try {
     const content = fs.readFileSync(logFile, 'utf-8');
     const lines = content.trim().split('\n').filter(l => l.trim()).map(l => {
@@ -521,7 +675,7 @@ app.post('/api/actions/create-ticket', (req, res) => {
   const { title, type, priority, description } = req.body;
   if (!title) return res.status(400).json({ error: 'Title is required' });
 
-  const board = readJSON(BOARD_FILE);
+  const board = readJSON(ctx.boardFile);
   if (!board) return res.status(500).json({ error: 'Cannot read board.json' });
 
   // Generate next ticket ID
@@ -555,12 +709,80 @@ app.post('/api/actions/create-ticket', (req, res) => {
 
   board.tickets.push(newTicket);
   board.last_updated = new Date().toISOString();
-  fs.writeFileSync(BOARD_FILE, JSON.stringify(board, null, 2));
+  fs.writeFileSync(ctx.boardFile, JSON.stringify(board, null, 2));
 
   writeHistory(ticketId, 'none', 'new', 'Created via dashboard');
   orch.addLog('info', `New ticket created: ${ticketId} — ${title}`);
 
   res.json({ ok: true, ticket: newTicket });
+});
+
+// ── Project Management Endpoints ─────────────────────────────────────────────
+
+// List all projects
+app.get('/api/projects', (req, res) => {
+  if (!fs.existsSync(PROJECTS_DIR)) return res.json({ projects: [] });
+  const dirs = fs.readdirSync(PROJECTS_DIR).filter(f =>
+    fs.statSync(path.join(PROJECTS_DIR, f)).isDirectory()
+  );
+  const projects = dirs.map(name => {
+    const boardPath = path.join(PROJECTS_DIR, name, 'board.json');
+    const sprintPath = path.join(PROJECTS_DIR, name, 'sprints', 'current.json');
+    const board = readJSON(boardPath);
+    const sprint = readJSON(sprintPath);
+    return {
+      name,
+      displayName: board?.project || name,
+      ticketCount: board?.tickets?.length || 0,
+      sprintStatus: sprint?.status || 'unknown',
+      active: name === ctx.projectName,
+    };
+  });
+  res.json({ projects });
+});
+
+// Switch active project
+app.post('/api/projects/switch', (req, res) => {
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ error: 'Project name is required' });
+  const projectDir = path.join(PROJECTS_DIR, name);
+  if (!fs.existsSync(projectDir)) return res.status(404).json({ error: `Project "${name}" not found` });
+
+  // Stop all agents before switching
+  orch.stopAll();
+
+  setActiveProject(name);
+  orch.repoint(ctx.projectDir);
+  startWatcher();
+
+  // Persist to config
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify({ activeProject: name }, null, 2));
+
+  orch.addLog('info', `Switched to project: ${name}`);
+  const state = getFullState();
+  broadcast('state-update', state);
+  broadcast('project-switch', { name });
+  res.json({ ok: true, activeProject: name });
+});
+
+// Create a new project
+app.post('/api/projects/create', (req, res) => {
+  const { name, spec, specContent } = req.body;
+  if (!name) return res.status(400).json({ error: 'Project name is required' });
+  if (!/^[a-zA-Z0-9 _-]+$/.test(name)) return res.status(400).json({ error: 'Project name must be alphanumeric (spaces, dashes, underscores allowed)' });
+  const slug = name.replace(/\s+/g, '-');
+  const projectDir = path.join(PROJECTS_DIR, slug);
+  if (fs.existsSync(projectDir)) return res.status(409).json({ error: `Project "${name}" already exists` });
+
+  scaffoldProject(slug, spec, name);
+
+  // If spec content was pasted or uploaded, save it as SPEC.md in the project folder
+  if (specContent) {
+    const specPath = path.join(projectDir, 'SPEC.md');
+    fs.writeFileSync(specPath, specContent);
+  }
+
+  res.json({ ok: true, name: slug });
 });
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -573,50 +795,68 @@ function writeHistory(ticketId, from, to, note) {
     note
   };
   const filename = `${new Date().toISOString().replace(/[:.]/g, '-')}-${ticketId}-${to}.json`;
-  fs.writeFileSync(path.join(HISTORY_DIR, filename), JSON.stringify(entry, null, 2) + '\n');
+  fs.writeFileSync(path.join(ctx.historyDir, filename), JSON.stringify(entry, null, 2) + '\n');
 }
 
 // ── File Watcher ────────────────────────────────────────────────────────────
-const watcher = chokidar.watch(BOARD_DIR, {
-  persistent: true,
-  ignoreInitial: true,
-  awaitWriteFinish: { stabilityThreshold: 300 },
-});
+let watcher = null;
 
-watcher.on('all', (event, filepath) => {
-  console.log(`[watch] ${event}: ${path.relative(BOARD_DIR, filepath)}`);
-  const state = getFullState();
-  broadcast('state-update', state);
-
-  // Log pipeline alerts
-  state.alerts.forEach(a => {
-    if (a.level === 'warn' || a.level === 'error') {
-      console.log(`[ALERT] ${a.message}`);
-    }
+function startWatcher() {
+  if (watcher) { watcher.close(); }
+  watcher = chokidar.watch(ctx.projectDir, {
+    persistent: true,
+    ignoreInitial: true,
+    ignored: ['**/logs/**', '**/*.log'],  // Agent logs handled via SSE, not file watch
+    awaitWriteFinish: { stabilityThreshold: 500 },
   });
 
-  // In auto mode, check if there's new work to dispatch
-  if (orch.autoMode) {
-    orch.evaluateAndDispatch();
-  }
-});
+  // Debounce file-watch broadcasts — coalesce rapid file changes into one update
+  let watchDebounce = null;
+  watcher.on('all', (event, filepath) => {
+    console.log(`[watch] ${event}: ${path.relative(ctx.projectDir, filepath)}`);
+    clearTimeout(watchDebounce);
+    watchDebounce = setTimeout(() => {
+      const state = getFullState();
+      broadcast('state-update', state);
+
+      // Log pipeline alerts
+      state.alerts.forEach(a => {
+        if (a.level === 'warn' || a.level === 'error') {
+          console.log(`[ALERT] ${a.message}`);
+        }
+      });
+
+      // In auto mode, check if there's new work to dispatch
+      if (orch.autoMode) {
+        orch.evaluateAndDispatch();
+      }
+    }, 30000);  // 30s debounce on file watch
+  });
+}
 
 // ── Serve Dashboard ─────────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ── Start ───────────────────────────────────────────────────────────────────
+
+// Initialize project context, migrate if needed, start watcher
+initActiveProject();
+orch.repoint(ctx.projectDir);
+startWatcher();
+
 app.listen(PORT, () => {
   console.log('');
   console.log('  ┌──────────────────────────────────────────────┐');
   console.log('  │  SwarmBoard Dashboard                         │');
   console.log(`  │  http://localhost:${PORT}                      │`);
   console.log('  │                                              │');
-  console.log(`  │  Watching: ${path.relative(process.cwd(), BOARD_DIR).padEnd(33)}│`);
+  console.log(`  │  Project: ${(ctx.projectName || '').padEnd(35)}│`);
+  console.log(`  │  Watching: ${path.relative(process.cwd(), ctx.projectDir).padEnd(33)}│`);
   console.log('  │  Agents coordinate via board.json            │');
   console.log('  │  You control via this dashboard              │');
   console.log('  └──────────────────────────────────────────────┘');
   console.log('');
-  
+
   // Initial state check
   const state = getFullState();
   if (state.alerts.length > 0) {

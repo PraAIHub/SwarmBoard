@@ -32,14 +32,20 @@
   .slide.active { display: flex; }
 
   @media (max-width: 768px) {
-    body { overflow: visible; height: auto; }
+    body { overflow-x: hidden; overflow-y: auto; height: auto; }
+    /* On mobile: show ALL slides as a scrollable page */
     .slide {
+      display: flex !important;
       height: auto;
-      min-height: 100vh;
-      padding: 50px 16px 110px 16px;
+      min-height: auto;
+      padding: 40px 16px;
       justify-content: flex-start;
       overflow-y: visible;
+      position: static;
+      z-index: 1;
+      border-bottom: 1px solid #1f2937;
     }
+    .slide.active { display: flex !important; }
     h1 { font-size: 28px !important; }
     h2 { font-size: 22px !important; line-height: 1.4 !important; }
     h3 { font-size: 16px !important; }
@@ -64,7 +70,6 @@
     .tag { font-size: 11px !important; }
     .agent-card { padding: 16px !important; }
     .slide-number { top: 12px; right: 16px; }
-    .kbd-hint { display: none; }
     br { display: inline; }
   }
 
@@ -84,7 +89,7 @@
     border: 1px solid #1f2937;
     backdrop-filter: blur(10px);
   }
-  .nav button {
+  .nav-btn {
     background: #1f2937;
     color: #e5e7eb;
     border: none;
@@ -94,11 +99,12 @@
     font-family: inherit;
     font-size: 14px;
     transition: background 0.2s;
-    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    -webkit-user-select: none;
   }
-  .nav button:hover { background: #374151; }
-  .nav button:active { background: #4b5563; }
-  .nav button:disabled { opacity: 0.3; cursor: default; }
+  .nav-btn:hover { background: #374151; }
+  .nav-btn:active { background: #4b5563; }
+  .nav-btn.disabled { opacity: 0.3; pointer-events: none; }
   .nav .counter {
     font-family: 'JetBrains Mono', monospace;
     font-size: 13px;
@@ -108,23 +114,9 @@
   }
 
   @media (max-width: 768px) {
-    .nav {
-      bottom: 16px;
-      left: 8px;
-      right: 8px;
-      transform: none;
-      justify-content: space-between;
-      padding: 8px 12px;
-      border-radius: 16px;
-    }
-    .nav button {
-      padding: 12px 24px;
-      font-size: 16px;
-      min-height: 44px;
-      border-radius: 10px;
-    }
-    .nav .counter { font-size: 14px; }
-    .dots { display: none; }
+    .nav { display: none !important; }
+    .slide-nav { display: none !important; }
+    .slide-number { display: none; }
   }
 
   /* Dots */
@@ -379,21 +371,6 @@
     margin: 20px 0;
   }
 
-  /* Keyboard hint */
-  .kbd-hint {
-    position: fixed;
-    bottom: 30px;
-    right: 40px;
-    font-size: 12px;
-    color: #374151;
-    z-index: 100;
-  }
-  .kbd-hint kbd {
-    background: #1f2937;
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-family: 'JetBrains Mono', monospace;
-  }
 </style>
 </head>
 <body>
@@ -461,7 +438,7 @@
 <div class="slide center" id="s4">
   <div class="slide-number">04</div>
   <h3>Four Agents, Four Roles</h3>
-  <h2>Each agent runs in its own <span class="accent">Claude Code</span> session</h2>
+  <h2>Each agent runs in its own <span class="accent">Swarm Agent</span> session</h2>
   <div class="grid-4" style="margin-top: 30px;">
     <div class="agent-card pm">
       <div class="role blue">PM</div>
@@ -728,13 +705,13 @@
         <h4 class="blue">Option B: Manual Terminals</h4>
         <div class="code-block" style="margin-top: 12px;">
           <span class="comment"># Terminal 1 — PM</span><br>
-          <span class="cmd">claude</span> &gt; <span class="flag">/pm</span><br><br>
+          <span class="cmd">swarm</span> &gt; <span class="flag">/pm</span><br><br>
           <span class="comment"># Terminal 2 — Dev</span><br>
-          <span class="cmd">claude</span> &gt; <span class="flag">/dev</span><br><br>
+          <span class="cmd">swarm</span> &gt; <span class="flag">/dev</span><br><br>
           <span class="comment"># Terminal 3 — Reviewer</span><br>
-          <span class="cmd">claude</span> &gt; <span class="flag">/reviewer</span><br><br>
+          <span class="cmd">swarm</span> &gt; <span class="flag">/reviewer</span><br><br>
           <span class="comment"># Terminal 4 — Test</span><br>
-          <span class="cmd">claude</span> &gt; <span class="flag">/test</span>
+          <span class="cmd">swarm</span> &gt; <span class="flag">/test</span>
         </div>
       </div>
     </div>
@@ -782,71 +759,97 @@
 </div>
 
 <!-- Navigation -->
-<div class="nav">
-  <button id="prev" onclick="go(-1)">&larr; Prev</button>
-  <div class="dots" id="dots"></div>
+<div class="nav" id="nav">
+  <div id="prev" class="nav-btn">&larr; Prev</div>
   <div class="counter" id="counter">1 / 12</div>
-  <button id="next" onclick="go(1)">Next &rarr;</button>
-</div>
-
-<div class="kbd-hint">
-  <kbd>&larr;</kbd> <kbd>&rarr;</kbd> to navigate
+  <div id="next" class="nav-btn">&rarr; Next</div>
 </div>
 
 <script>
-  const slides = document.querySelectorAll('.slide');
-  const total = slides.length;
-  let current = 0;
+  var slides = document.querySelectorAll('.slide');
+  var total = slides.length;
+  var current = 0;
+  var prevBtn = document.getElementById('prev');
+  var nextBtn = document.getElementById('next');
+  var counter = document.getElementById('counter');
 
-  // Build dots
-  const dotsEl = document.getElementById('dots');
-  for (let i = 0; i < total; i++) {
-    const d = document.createElement('span');
-    d.onclick = () => goTo(i);
-    dotsEl.appendChild(d);
+  // Inject in-slide nav for mobile (plain <a> tags — guaranteed clickable)
+  for (var i = 0; i < total; i++) {
+    var nav = document.createElement('div');
+    nav.className = 'slide-nav';
+    var prevLink = document.createElement('a');
+    prevLink.href = '#';
+    prevLink.textContent = '\u2190 Prev';
+    prevLink.setAttribute('data-dir', '-1');
+    if (i === 0) prevLink.className = 'hide';
+
+    var label = document.createElement('span');
+    label.textContent = (i + 1) + ' / ' + total;
+
+    var nextLink = document.createElement('a');
+    nextLink.href = '#';
+    nextLink.textContent = 'Next \u2192';
+    nextLink.setAttribute('data-dir', '1');
+    if (i === total - 1) nextLink.className = 'hide';
+
+    nav.appendChild(prevLink);
+    nav.appendChild(label);
+    nav.appendChild(nextLink);
+    slides[i].appendChild(nav);
   }
+
+  // Handle in-slide nav clicks
+  document.addEventListener('click', function(e) {
+    var link = e.target.closest('.slide-nav a');
+    if (link) {
+      e.preventDefault();
+      var dir = parseInt(link.getAttribute('data-dir'));
+      go(dir);
+    }
+  });
 
   function goTo(n) {
     slides[current].classList.remove('active');
     current = Math.max(0, Math.min(total - 1, n));
     slides[current].classList.add('active');
-    document.getElementById('counter').textContent = `${current + 1} / ${total}`;
-    document.getElementById('prev').disabled = current === 0;
-    document.getElementById('next').disabled = current === total - 1;
-    dotsEl.querySelectorAll('span').forEach((d, i) => d.classList.toggle('active', i === current));
+    // Desktop nav
+    if (counter) counter.textContent = (current + 1) + ' / ' + total;
+    if (prevBtn) {
+      if (current === 0) { prevBtn.classList.add('disabled'); } else { prevBtn.classList.remove('disabled'); }
+    }
+    if (nextBtn) {
+      if (current === total - 1) { nextBtn.classList.add('disabled'); } else { nextBtn.classList.remove('disabled'); }
+    }
+    window.scrollTo(0, 0);
   }
 
   function go(dir) { goTo(current + dir); }
 
-  document.addEventListener('keydown', (e) => {
+  // Desktop nav buttons
+  if (prevBtn) prevBtn.addEventListener('click', function() { go(-1); });
+  if (nextBtn) nextBtn.addEventListener('click', function() { go(1); });
+
+  // Keyboard (desktop)
+  document.addEventListener('keydown', function(e) {
     if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); go(1); }
     if (e.key === 'ArrowLeft') { e.preventDefault(); go(-1); }
-    if (e.key === 'Home') { e.preventDefault(); goTo(0); }
-    if (e.key === 'End') { e.preventDefault(); goTo(total - 1); }
   });
 
-  // Touch swipe support
-  let touchStartX = 0;
-  let touchStartY = 0;
-  document.addEventListener('touchstart', (e) => {
+  // Swipe (mobile)
+  var touchStartX = 0;
+  var touchStartY = 0;
+  document.addEventListener('touchstart', function(e) {
     touchStartX = e.changedTouches[0].screenX;
     touchStartY = e.changedTouches[0].screenY;
   }, { passive: true });
-  document.addEventListener('touchend', (e) => {
-    const dx = e.changedTouches[0].screenX - touchStartX;
-    const dy = e.changedTouches[0].screenY - touchStartY;
-    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 50) {
+  document.addEventListener('touchend', function(e) {
+    if (e.target.closest('.slide-nav')) return;
+    var dx = e.changedTouches[0].screenX - touchStartX;
+    var dy = e.changedTouches[0].screenY - touchStartY;
+    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 60) {
       go(dx < 0 ? 1 : -1);
     }
   }, { passive: true });
-
-  // Also allow tapping left/right halves of screen
-  document.addEventListener('click', (e) => {
-    if (e.target.closest('.nav') || e.target.closest('a') || e.target.closest('button')) return;
-    const x = e.clientX / window.innerWidth;
-    if (x > 0.75) go(1);
-    else if (x < 0.25) go(-1);
-  });
 
   goTo(0);
 </script>

@@ -31,11 +31,13 @@ class Orchestrator {
     };
 
     // Rate limit detection
-    this.rateLimitPattern = /out of (extra )?usage|rate.limit|usage.*resets/i;
+    // Only match actual rate limit rejections, NOT allowed_warning events
+    this.rateLimitPattern = /out of (extra )?usage|usage.*resets|"status"\s*:\s*"(rejected|exceeded|blocked)"/i;
     this.rateLimitState = { detected: false, resetInfo: null };
 
-    // Log persistence directory
+    // Log and history persistence directories
     this.logsDir = path.join(projectRoot, '.agent-board', 'logs');
+    this.historyDir = path.join(projectRoot, '.agent-board', 'history');
     try { fs.mkdirSync(this.logsDir, { recursive: true }); } catch (e) { /* exists */ }
 
     // Restore last 50 lines per agent from disk on startup
@@ -88,6 +90,30 @@ class Orchestrator {
   isHalted() {
     const bb = this.readBlackboard();
     return bb.includes('[halt]');
+  }
+
+  // Repoint all project-specific paths to a new project directory.
+  // Called on project switch. schemaPath and projectRoot stay unchanged.
+  repoint(projectDir) {
+    this.boardPath = path.join(projectDir, 'board.json');
+    this.blackboardPath = path.join(projectDir, 'blackboard.md');
+    this.sprintPath = path.join(projectDir, 'sprints', 'current.json');
+    this.logsDir = path.join(projectDir, 'logs');
+    this.historyDir = path.join(projectDir, 'history');
+    try { fs.mkdirSync(this.logsDir, { recursive: true }); } catch (e) { /* exists */ }
+
+    // Reload agent logs from new project
+    for (const role of Object.keys(this.agents)) {
+      this.agentLogs[role] = [];
+      const logFile = path.join(this.logsDir, `${role}.log`);
+      try {
+        const content = fs.readFileSync(logFile, 'utf-8');
+        const lines = content.trim().split('\n').filter(l => l.trim()).slice(-50);
+        this.agentLogs[role] = lines.map(l => {
+          try { return JSON.parse(l); } catch (e) { return { text: l, at: new Date().toISOString() }; }
+        });
+      } catch (e) { /* no previous log */ }
+    }
   }
 
   // --- Board Analysis ---
@@ -163,10 +189,19 @@ class Orchestrator {
       work['test-agent'].description = `${testReady.length} test-ready`;
     }
 
-    // PM: check if backlog needs grooming
+    // PM: check if backlog needs grooming or if backlog is empty (need to create tickets from spec)
     const newTickets = tickets.filter(t => t.status === 'new');
-    work['pm-agent'].available = newTickets;
-    work['pm-agent'].description = `${newTickets.length} need grooming`;
+    if (newTickets.length > 0) {
+      work['pm-agent'].available = newTickets;
+      work['pm-agent'].description = `${newTickets.length} need grooming`;
+    } else if (tickets.length === 0) {
+      // Empty backlog — PM needs to read spec and create tickets
+      work['pm-agent'].available = [{ id: 'BACKLOG-EMPTY', title: 'Create tickets from spec', status: 'new', priority: 'critical' }];
+      work['pm-agent'].description = 'empty backlog — need to create tickets from spec';
+    } else {
+      work['pm-agent'].available = [];
+      work['pm-agent'].description = 'no new tickets to groom';
+    }
 
     return work;
   }
@@ -229,6 +264,30 @@ ${resumeBlock}
 Current work available:
 ${ticketList || 'No tickets currently available for your role.'}
 
+IMPORTANT — OUTPUT FORMAT FOR REAL-TIME VISIBILITY:
+Before doing ANY work, you MUST first output your plan as a numbered list so the human can see what you're about to do. Use this exact format:
+
+=== PLAN ===
+1. [First thing you will do]
+2. [Second thing you will do]
+3. [Third thing you will do]
+... (as many steps as needed)
+=== END PLAN ===
+
+Then execute each step ONE AT A TIME. Before starting each step, print:
+
+>>> STEP N: [description]
+
+After completing each step, print:
+
+<<< STEP N: DONE — [brief result summary]
+
+If a step fails, print:
+
+<<< STEP N: FAILED — [what went wrong]
+
+This lets the human monitor your progress in real-time via the dashboard logs.
+
 Execute one iteration of your loop: read the blackboard, pick the highest priority ticket available to you, do the work, update board.json and history, then stop.
 
 IMPORTANT: Work in the project directory. Read real files. Make real changes. Commit to git if your role requires it.
@@ -240,8 +299,15 @@ ${branchInstructions}`;
     return text.replace(/\x1B\[[0-9;]*[a-zA-Z]|\x1B\][^\x07]*\x07|\x1B\[\?[0-9;]*[a-zA-Z]|\r/g, '');
   }
 
-  pushAgentLog(role, message) {
-    const entry = { text: message, at: new Date().toISOString() };
+  generateRunId() {
+    const ts = Date.now().toString(36);
+    const rand = Math.random().toString(36).slice(2, 6);
+    return `run-${ts}-${rand}`;
+  }
+
+  pushAgentLog(role, message, meta = {}) {
+    const runId = this.agents[role].runId || null;
+    const entry = { text: message, at: new Date().toISOString(), role, runId, ...meta };
     this.agentLogs[role].push(entry);
     if (this.agentLogs[role].length > 50) this.agentLogs[role].shift();
     // Persist to disk (append, one JSON object per line)
@@ -249,7 +315,14 @@ ${branchInstructions}`;
       const logFile = path.join(this.logsDir, `${role}.log`);
       fs.appendFileSync(logFile, JSON.stringify(entry) + '\n');
     } catch (e) { /* best effort */ }
-    this.emit('agent-output', { role, data: message });
+    // Debounce SSE emission — batch log lines into 500ms windows
+    if (!this._logFlushTimers) this._logFlushTimers = {};
+    if (!this._logFlushTimers[role]) {
+      this._logFlushTimers[role] = setTimeout(() => {
+        this._logFlushTimers[role] = null;
+        this.emit('agent-output', { role });
+      }, 3000);
+    }
   }
 
   async startAgent(role) {
@@ -286,10 +359,25 @@ ${branchInstructions}`;
 
     const prompt = this.buildPrompt(role);
     const topTicket = work.available[0];
+    const runId = this.generateRunId();
 
-    this.addLog('info', `Starting ${role} → ${topTicket.id}: ${topTicket.title}`);
+    this.addLog('info', `Starting ${role} [${runId}] → ${topTicket.id}: ${topTicket.title}`);
     this.agents[role].status = 'running';
     this.agents[role].current = topTicket.id;
+    this.agents[role].runId = runId;
+    this.agents[role].startedAt = new Date().toISOString();
+
+    // Audit: session start
+    this.pushAgentLog(role, `═══ AGENT SESSION START ═══`, {
+      event: 'session-start',
+      ticket: topTicket.id,
+      ticketTitle: topTicket.title,
+      ticketStatus: topTicket.status,
+      ticketPriority: topTicket.priority,
+      project: this.readBoard().project || 'unknown',
+      branch: topTicket.branch || null,
+      isResume: !!work.resume,
+    });
 
     try {
       // claude -p requires a real TTY to produce output.
@@ -315,29 +403,34 @@ ${branchInstructions}`;
 
       let output = '';
       let rateLimitHits = 0;
+      let lineBuf = '';  // Buffer for incomplete lines from PTY chunks
 
       proc.onData((raw) => {
         const text = this.stripAnsi(raw);
         output += text;
-        const lines = text.split('\n').filter(l => l.trim());
-        for (const line of lines) {
-          // Detect rate limit errors
+
+        // Buffer lines — PTY sends arbitrary chunks, not full lines
+        lineBuf += text;
+        const parts = lineBuf.split('\n');
+        lineBuf = parts.pop(); // Keep incomplete trailing chunk
+
+        for (const rawLine of parts) {
+          const line = rawLine.trim();
+          if (!line) continue;
+
+          // Detect rate limit errors (works on both raw and parsed text)
           if (this.rateLimitPattern.test(line)) {
             rateLimitHits++;
             if (rateLimitHits === 1) {
-              // First hit: log it, alert, and kill the process
               const resetMatch = line.match(/resets?\s+(.+)/i);
               const resetInfo = resetMatch ? resetMatch[1].trim() : 'unknown';
               this.rateLimitState = { detected: true, resetInfo, at: new Date().toISOString() };
 
-              this.pushAgentLog(role, `⛔ RATE LIMITED — ${line.trim()}`);
+              this.pushAgentLog(role, `⛔ RATE LIMITED — ${line}`);
               this.addLog('error', `${role} hit rate limit — ${resetInfo}. Stopping all agents.`);
               this.emit('rate-limit', { role, resetInfo, at: new Date().toISOString() });
 
-              // Kill this agent — no point retrying
               try { proc.kill('SIGTERM'); } catch (e) { /* already dying */ }
-
-              // Stop all other agents — rate limit is account-level
               for (const otherRole of Object.keys(this.agents)) {
                 if (otherRole !== role && this.agents[otherRole].process) {
                   this.pushAgentLog(otherRole, `⛔ Stopped — account rate limit hit by ${role}`);
@@ -347,17 +440,98 @@ ${branchInstructions}`;
               this.agents[role].status = 'rate-limited';
               this.emit('agent-update', this.getAgentStates());
             }
-            // Deduplicate: don't log subsequent identical rate limit lines
             return;
           }
-          this.pushAgentLog(role, line);
+
+          // Try to parse as stream-json from claude
+          let obj;
+          try { obj = JSON.parse(line); } catch (e) {
+            // Not JSON — emit as raw text (fallback)
+            this.pushAgentLog(role, line);
+            continue;
+          }
+
+          const msgType = obj.type || '';
+
+          // Assistant message blocks (full message)
+          if (msgType === 'assistant' && obj.message) {
+            for (const block of (obj.message.content || [])) {
+              if (block.type === 'text' && block.text) {
+                for (const tl of block.text.split('\n').filter(l => l.trim())) {
+                  this.pushAgentLog(role, tl);
+                }
+              }
+            }
+          }
+
+          // Streaming text deltas
+          else if (msgType === 'content_block_delta') {
+            const delta = obj.delta || {};
+            if (delta.type === 'text_delta' && delta.text) {
+              for (const tl of delta.text.split('\n').filter(l => l.trim())) {
+                this.pushAgentLog(role, tl);
+              }
+            }
+          }
+
+          // Tool use — show what the agent is doing
+          else if (msgType === 'tool_use') {
+            const name = obj.name || obj.tool || 'unknown';
+            const inp = obj.input || {};
+            if (name === 'Read') {
+              this.pushAgentLog(role, `[tool] Reading: ${inp.file_path || '?'}`);
+            } else if (name === 'Write') {
+              this.pushAgentLog(role, `[tool] Writing: ${inp.file_path || '?'}`);
+            } else if (name === 'Edit') {
+              this.pushAgentLog(role, `[tool] Editing: ${inp.file_path || '?'}`);
+            } else if (name === 'Bash') {
+              this.pushAgentLog(role, `[tool] Bash: ${String(inp.command || '?').slice(0, 80)}`);
+            } else if (name === 'Grep') {
+              this.pushAgentLog(role, `[tool] Grep: ${inp.pattern || '?'}`);
+            } else if (name === 'Glob') {
+              this.pushAgentLog(role, `[tool] Glob: ${inp.pattern || '?'}`);
+            } else {
+              this.pushAgentLog(role, `[tool] ${name}`);
+            }
+          }
+
+          // Final result
+          else if (msgType === 'result') {
+            for (const block of (obj.content || [])) {
+              if (block.type === 'text' && block.text) {
+                for (const tl of block.text.split('\n').filter(l => l.trim())) {
+                  this.pushAgentLog(role, tl);
+                }
+              }
+            }
+          }
+
+          // System/init messages — skip silently
+          // else: ignore unknown types
         }
       });
 
       proc.onExit(({ exitCode }) => {
+        const startedAt = this.agents[role].startedAt;
+        const duration = startedAt ? Math.round((Date.now() - new Date(startedAt).getTime()) / 1000) : null;
+        const exitStatus = rateLimitHits > 0 ? 'rate-limited'
+          : exitCode === 0 ? 'success' : `error (code ${exitCode})`;
+
+        // Audit: session end
+        this.pushAgentLog(role, `═══ AGENT SESSION END ═══`, {
+          event: 'session-end',
+          ticket: topTicket.id,
+          exitCode,
+          exitStatus,
+          durationSec: duration,
+          rateLimitHits,
+        });
+
         this.agents[role].process = null;
         this.agents[role].pid = null;
         this.agents[role].current = null;
+        this.agents[role].runId = null;
+        this.agents[role].startedAt = null;
 
         // Preserve rate-limited status — don't reset to idle
         if (this.agents[role].status !== 'rate-limited') {
@@ -367,9 +541,9 @@ ${branchInstructions}`;
         if (rateLimitHits > 0) {
           this.addLog('error', `${role} killed after rate limit (${rateLimitHits} retries suppressed)`);
         } else if (exitCode === 0) {
-          this.addLog('success', `${role} completed task on ${topTicket.id}`);
+          this.addLog('success', `${role} completed task on ${topTicket.id} (${duration}s)`);
         } else {
-          this.addLog('error', `${role} exited with code ${exitCode}: ${output.slice(-200)}`);
+          this.addLog('error', `${role} exited with code ${exitCode} after ${duration}s: ${output.slice(-200)}`);
         }
 
         this.emit('agent-update', this.getAgentStates());
@@ -433,10 +607,15 @@ ${branchInstructions}`;
     this.addLog('info', 'Auto-orchestration ENABLED — agents will be dispatched automatically');
     this.emit('mode-change', { autoMode: true });
     this.evaluateAndDispatch();
+    // Poll for new work every 10s while auto mode is on
+    this._autoInterval = setInterval(() => {
+      if (this.autoMode) this.evaluateAndDispatch();
+    }, 10000);
   }
 
   stopAutoMode() {
     this.autoMode = false;
+    if (this._autoInterval) { clearInterval(this._autoInterval); this._autoInterval = null; }
     this.addLog('info', 'Auto-orchestration DISABLED — manual control only');
     this.emit('mode-change', { autoMode: false });
   }
@@ -535,7 +714,7 @@ ${branchInstructions}`;
       tickets_halted: halted.map(h => h.id),
       previous_states: Object.fromEntries(halted.map(h => [h.id, h.previousStatus]))
     };
-    const historyPath = path.join(this.projectRoot, '.agent-board', 'history',
+    const historyPath = path.join(this.historyDir,
       `${new Date().toISOString().replace(/[:.]/g, '-')}-sprint-halted.json`);
     fs.writeFileSync(historyPath, JSON.stringify(historyEntry, null, 2));
 
@@ -555,7 +734,7 @@ ${branchInstructions}`;
   writeHistory(ticketId, from, to, by, note) {
     const entry = { ticket: ticketId, from, to, by, at: new Date().toISOString(), note };
     const filename = `${new Date().toISOString().replace(/[:.]/g, '-')}-${ticketId}-${to}.json`;
-    const historyPath = path.join(this.projectRoot, '.agent-board', 'history', filename);
+    const historyPath = path.join(this.historyDir, filename);
     fs.writeFileSync(historyPath, JSON.stringify(entry, null, 2));
   }
 
@@ -571,6 +750,8 @@ ${branchInstructions}`;
         current: agent.current,
         label: agent.label,
         pid: agent.pid,
+        runId: agent.runId || null,
+        startedAt: agent.startedAt || null,
         log: (this.agentLogs[role] || []).slice(-10),
       };
     }
