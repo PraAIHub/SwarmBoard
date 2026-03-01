@@ -4,12 +4,13 @@ const fs = require('fs');
 const { execSync } = require('child_process');
 
 class Orchestrator {
-  constructor(projectRoot) {
+  constructor(projectRoot, projectDir) {
     this.projectRoot = projectRoot;
-    this.boardPath = path.join(projectRoot, '.agent-board', 'board.json');
-    this.blackboardPath = path.join(projectRoot, '.agent-board', 'blackboard.md');
+    this.projectDir = projectDir;
+    this.boardPath = path.join(projectDir, 'board.json');
+    this.blackboardPath = path.join(projectDir, 'blackboard.md');
     this.schemaPath = path.join(projectRoot, '.agent-board', 'schema.json');
-    this.sprintPath = path.join(projectRoot, '.agent-board', 'sprints', 'current.json');
+    this.sprintPath = path.join(projectDir, 'sprints', 'current.json');
 
     // Agent process management
     this.agents = {
@@ -37,8 +38,8 @@ class Orchestrator {
     this.rateLimitState = { detected: false, resetInfo: null };
 
     // Log and history persistence directories
-    this.logsDir = path.join(projectRoot, '.agent-board', 'logs');
-    this.historyDir = path.join(projectRoot, '.agent-board', 'history');
+    this.logsDir = path.join(projectDir, 'logs');
+    this.historyDir = path.join(projectDir, 'history');
     try { fs.mkdirSync(this.logsDir, { recursive: true }); } catch (e) { /* exists */ }
 
     // Restore last 50 lines per agent from disk on startup
@@ -113,28 +114,8 @@ class Orchestrator {
     return bb.includes('[halt]');
   }
 
-  // Repoint all project-specific paths to a new project directory.
-  // Called on project switch. schemaPath and projectRoot stay unchanged.
-  repoint(projectDir) {
-    this.boardPath = path.join(projectDir, 'board.json');
-    this.blackboardPath = path.join(projectDir, 'blackboard.md');
-    this.sprintPath = path.join(projectDir, 'sprints', 'current.json');
-    this.logsDir = path.join(projectDir, 'logs');
-    this.historyDir = path.join(projectDir, 'history');
-    try { fs.mkdirSync(this.logsDir, { recursive: true }); } catch (e) { /* exists */ }
-
-    // Reload agent logs from new project
-    for (const role of Object.keys(this.agents)) {
-      this.agentLogs[role] = [];
-      const logFile = path.join(this.logsDir, `${role}.log`);
-      try {
-        const content = fs.readFileSync(logFile, 'utf-8');
-        const lines = content.trim().split('\n').filter(l => l.trim()).slice(-50);
-        this.agentLogs[role] = lines.map(l => {
-          try { return JSON.parse(l); } catch (e) { return { text: l, at: new Date().toISOString() }; }
-        });
-      } catch (e) { /* no previous log */ }
-    }
+  get projectName() {
+    return path.basename(this.projectDir);
   }
 
   // --- Board Analysis ---
@@ -660,7 +641,8 @@ CRITICAL RESTRICTION: NEVER read, modify, create, or delete any files inside the
         this.emit('board-change', this.getFullState());
 
         // In auto mode, check if there's more work after a delay
-        if (this.autoMode) {
+        // But NOT if the agent was manually stopped
+        if (this.autoMode && this.agents[role].status !== 'stopped') {
           setTimeout(() => this.evaluateAndDispatch(), 2000);
         }
       });
@@ -685,8 +667,15 @@ CRITICAL RESTRICTION: NEVER read, modify, create, or delete any files inside the
   stopAgent(role) {
     const agent = this.agents[role];
     if (agent.process) {
+      const pid = agent.pid;
+      // SIGTERM first, then SIGKILL after 3s if still alive
       agent.process.kill('SIGTERM');
-      this.addLog('warn', `Stopped ${role} (PID: ${agent.pid})`);
+      setTimeout(() => {
+        try { process.kill(pid, 0); process.kill(pid, 'SIGKILL'); } catch (e) { /* already dead */ }
+      }, 3000);
+      // Also kill the entire process group to catch child processes (claude spawns subprocesses)
+      try { process.kill(-pid, 'SIGTERM'); } catch (e) { /* no process group */ }
+      this.addLog('warn', `Stopped ${role} (PID: ${pid})`);
       agent.process = null;
       agent.pid = null;
       agent.current = null;

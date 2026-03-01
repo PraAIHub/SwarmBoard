@@ -255,7 +255,7 @@
   .toggle.on::after { transform: translateX(16px); }
 
   /* Chat */
-  .chat-container { display: flex; flex-direction: column; height: calc(100vh - 260px); min-height: 400px; }
+  .chat-container { display: flex; flex-direction: column; height: calc(100vh - 180px); min-height: 400px; }
   .chat-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
   .chat-header h3 { font-size: 14px; font-weight: 700; color: var(--text); }
   .chat-messages { flex: 1; overflow-y: auto; padding: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 10px; }
@@ -278,6 +278,16 @@
   .chat-spec-banner span { font-size: 12px; color: var(--done); font-weight: 600; }
   .chat-spec-btn { padding: 6px 14px; border-radius: 6px; border: 1px solid var(--done); background: rgba(34,197,94,0.15); color: var(--done); cursor: pointer; font-weight: 600; font-size: 11px; }
   .chat-spec-btn:hover { background: rgba(34,197,94,0.3); }
+
+  /* Chat action cards */
+  .chat-action-card { margin-top: 8px; padding: 10px 14px; border-radius: 8px; background: rgba(59,130,246,0.08); border: 1px solid rgba(59,130,246,0.25); }
+  .chat-action-card-title { font-size: 11px; font-weight: 700; color: var(--medium); margin-bottom: 4px; font-family: var(--mono); }
+  .chat-action-card-desc { font-size: 11px; color: var(--text-dim); margin-bottom: 8px; }
+  .chat-action-btns { display: flex; gap: 6px; }
+  .chat-action-confirm { padding: 4px 12px; border-radius: 4px; border: 1px solid var(--done); background: rgba(34,197,94,0.15); color: var(--done); cursor: pointer; font-weight: 600; font-size: 10px; }
+  .chat-action-confirm:hover { background: rgba(34,197,94,0.3); }
+  .chat-action-dismiss { padding: 4px 12px; border-radius: 4px; border: 1px solid var(--border); background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; }
+
 </style>
 </head>
 <body>
@@ -343,6 +353,7 @@ let activeTab = 'board';
 let expandedAgent = null;   // Track which agent card is expanded
 let logFilter = 'all';      // Agent log filter
 let agentsCollapsed = false; // Track agents section collapse
+let chatProject = null;     // Which project the chat targets (independent of active project)
 
 // Configurable refresh interval (persisted in localStorage)
 const REFRESH_OPTIONS = [5, 10, 15, 30, 60];
@@ -387,29 +398,41 @@ function connectSSE() {
   }
 
   es.addEventListener('state-update', e => {
-    STATE = JSON.parse(e.data);
-    debounced('state-update', () => render(), getRefreshInterval());
+    const data = JSON.parse(e.data);
+    // Only update UI state if this event is for the active project
+    if (!data.project || data.project === STATE?.activeProject) {
+      STATE = data;
+      debounced('state-update', () => render(), getRefreshInterval());
+    }
   });
 
   es.addEventListener('agent-update', e => {
+    const data = JSON.parse(e.data);
+    const evtProject = data.project;
+    // Filter: only update if for active project
+    if (evtProject && evtProject !== STATE?.activeProject) return;
     if (STATE) {
-      const data = JSON.parse(e.data);
-      STATE.agents = Object.entries(data).map(([role, info]) => ({ role, ...info }));
+      // Remove the project key before mapping agent states
+      const { project, ...agentData } = data;
+      STATE.agents = Object.entries(agentData).map(([role, info]) => ({ role, ...info }));
     }
     debounced('agent-update', () => render(), getRefreshInterval());
   });
 
   es.addEventListener('orchestrator-log', e => {
+    const data = JSON.parse(e.data);
+    if (data.project && data.project !== STATE?.activeProject) return;
     if (STATE) {
-      const entry = JSON.parse(e.data);
       if (!STATE.orchestratorLog) STATE.orchestratorLog = [];
-      STATE.orchestratorLog.push(entry);
+      STATE.orchestratorLog.push(data);
       if (STATE.orchestratorLog.length > 50) STATE.orchestratorLog.shift();
     }
     debounced('orch-log', () => { if (activeTab === 'logs') renderLogs(); }, getRefreshInterval());
   });
 
   es.addEventListener('agent-output', e => {
+    const data = JSON.parse(e.data);
+    if (data.project && data.project !== STATE?.activeProject) return;
     debounced('agent-output', () => { if (activeTab === 'logs') renderLogs(); }, Math.min(getRefreshInterval(), 5000));
   });
 
@@ -420,22 +443,47 @@ function connectSSE() {
 
   es.addEventListener('chat-response', e => {
     const data = JSON.parse(e.data);
+    const evtProject = data.project;
+    const cp = chatProject || STATE?.activeProject;
+    const isActiveChat = !evtProject || evtProject === cp;
+
     if (data.done) {
-      chatStreaming = false;
-      if (data.hasSpec && data.spec) {
-        chatPendingSpec = data.spec;
-        chatSuggestedName = data.suggestedName || '';
+      if (isActiveChat) {
+        // Currently viewing this chat — update live
+        chatStreaming = false;
+        if (data.hasSpec && data.spec) {
+          chatPendingSpec = data.spec;
+          chatSuggestedName = data.suggestedName || '';
+        }
+        fetchChatHistory().then(() => renderChat());
+      } else {
+        // Response for a background project — update its saved state
+        const saved = chatStreamState[evtProject];
+        if (saved) {
+          saved.streaming = false;
+          if (data.hasSpec && data.spec) {
+            saved.pendingSpec = data.spec;
+            saved.suggestedName = data.suggestedName || '';
+          }
+        }
       }
-      fetchChatHistory().then(() => renderChat());
     } else {
-      chatStreamBuffer += data.chunk;
-      const el = document.getElementById('chat-stream-content');
-      if (el) {
-        el.innerHTML = formatMarkdown(chatStreamBuffer) || 'Thinking...';
-        const feed = document.getElementById('chat-messages-feed');
-        if (feed) feed.scrollTop = feed.scrollHeight;
-      } else if (activeTab === 'chat') {
-        renderChat();
+      if (isActiveChat) {
+        chatStreamBuffer += data.chunk;
+        const el = document.getElementById('chat-stream-content');
+        if (el) {
+          el.innerHTML = formatMarkdown(chatStreamBuffer) || 'Thinking...';
+          const feed = document.getElementById('chat-messages-feed');
+          if (feed) feed.scrollTop = feed.scrollHeight;
+        } else if (activeTab === 'chat') {
+          renderChat();
+        }
+      } else {
+        // Buffer chunks for the background project
+        if (!chatStreamState[evtProject]) {
+          chatStreamState[evtProject] = { streaming: true, buffer: '', pendingSpec: null, suggestedName: '' };
+        }
+        chatStreamState[evtProject].buffer += data.chunk;
       }
     }
   });
@@ -451,8 +499,9 @@ function connectSSE() {
 
 // ── API ─────────────────────────────────────────────────────────────────────
 async function api(endpoint, body) {
+  const p = STATE?.activeProject || '';
   try {
-    const res = await fetch(`/api/actions/${endpoint}`, {
+    const res = await fetch(`/api/actions/${endpoint}?project=${encodeURIComponent(p)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -653,7 +702,7 @@ function renderAgents() {
 
         <div class="agent-log-preview">
           ${logLines.length
-            ? logLines.map(l => `<div class="agent-log-line">${l.text}</div>`).join('')
+            ? logLines.map(l => `<div class="agent-log-line">${escapeHtml(l.text || '')}</div>`).join('')
             : '<div class="agent-log-empty">No output yet</div>'}
         </div>
         <div class="agent-expand-hint">${isExpanded ? 'click to collapse' : 'click to expand log'}</div>
@@ -852,8 +901,9 @@ function escapeHtml(str) {
 
 async function viewAgentLog(role) {
   agentLogView = role;
+  const p = STATE?.activeProject || '';
   try {
-    const res = await fetch('/api/agents/' + role + '/log');
+    const res = await fetch(`/api/agents/${role}/log?project=${encodeURIComponent(p)}`);
     const data = await res.json();
     agentLogData[role] = data.lines || [];
   } catch (e) {
@@ -1189,8 +1239,9 @@ async function createTicket() {
 }
 
 async function startSprint() {
+  const p = STATE?.activeProject || '';
   try {
-    const res = await fetch('/api/actions/start-sprint', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    const res = await fetch(`/api/actions/start-sprint?project=${encodeURIComponent(p)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
     const data = await res.json();
     if (data.ok) {
       showToast(`Sprint started — ${data.approved.length} tickets approved`, 'success');
@@ -1218,8 +1269,9 @@ async function moveTicket(ticketId) {
     shouldStopAgent = true;
   }
 
+  const p = STATE?.activeProject || '';
   try {
-    const res = await fetch('/api/actions/move-ticket', {
+    const res = await fetch(`/api/actions/move-ticket?project=${encodeURIComponent(p)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ticketId, toStatus, stopAgent: shouldStopAgent })
@@ -1238,9 +1290,10 @@ async function moveTicket(ticketId) {
 }
 
 async function resetSprint() {
-  if (!confirm('Reset sprint to planning? This will stop all agents and revert all active tickets back to groomed.')) return;
+  if (!confirm('Reset sprint to planning? This will stop agents on this project and revert all active tickets back to groomed.')) return;
+  const p = STATE?.activeProject || '';
   try {
-    const res = await fetch('/api/actions/reset-sprint', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    const res = await fetch(`/api/actions/reset-sprint?project=${encodeURIComponent(p)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
     const data = await res.json();
     if (data.ok) {
       showToast(`Sprint reset — ${data.reverted.length} tickets reverted to groomed`, 'success');
@@ -1254,8 +1307,9 @@ async function resetSprint() {
 }
 
 async function startAgent(role) {
+  const p = STATE?.activeProject || '';
   try {
-    const res = await fetch(`/api/actions/agents/${role}/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    const res = await fetch(`/api/actions/agents/${role}/start?project=${encodeURIComponent(p)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
     const data = await res.json();
     if (data.ok) {
       showToast(`${role} started`, 'success');
@@ -1269,8 +1323,9 @@ async function startAgent(role) {
 }
 
 async function stopAgent(role) {
+  const p = STATE?.activeProject || '';
   try {
-    const res = await fetch(`/api/actions/agents/${role}/stop`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    const res = await fetch(`/api/actions/agents/${role}/stop?project=${encodeURIComponent(p)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
     const data = await res.json();
     showToast(data.ok ? `${role} stopped` : `${role} was not running`, data.ok ? 'success' : 'info');
     fetchState();
@@ -1280,8 +1335,9 @@ async function stopAgent(role) {
 }
 
 async function toggleAutoDispatch() {
+  const p = STATE?.activeProject || '';
   try {
-    const res = await fetch('/api/actions/dispatch/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    const res = await fetch(`/api/actions/dispatch/toggle?project=${encodeURIComponent(p)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
     const data = await res.json();
     showToast(`Auto-dispatch ${data.autoMode ? 'ON' : 'OFF'}`, 'success');
     fetchState();
@@ -1335,9 +1391,11 @@ async function fetchProjects() {
     const data = await res.json();
     const select = document.getElementById('project-select');
     const current = STATE?.activeProject || data.projects.find(p => p.active)?.name;
-    select.innerHTML = data.projects.map(p =>
-      `<option value="${p.name}" ${p.name === current ? 'selected' : ''}>${p.displayName || p.name}</option>`
-    ).join('');
+    select.innerHTML = data.projects.map(p => {
+      const badge = p.activeAgents > 0 ? ` [${p.activeAgents} agents]` : '';
+      return `<option value="${p.name}" ${p.name === current ? 'selected' : ''}>${p.displayName || p.name}${badge}</option>`;
+    }).join('');
+
   } catch (e) {
     console.error('Failed to fetch projects:', e);
   }
@@ -1353,6 +1411,30 @@ async function switchProject(name) {
     const data = await res.json();
     if (data.ok) {
       showToast(`Switched to ${name}`, 'success');
+      // Save current chat streaming state, switch chat to new project
+      const oldProject = chatProject || STATE?.activeProject;
+      if (oldProject) {
+        chatStreamState[oldProject] = {
+          streaming: chatStreaming,
+          buffer: chatStreamBuffer,
+          pendingSpec: chatPendingSpec,
+          suggestedName: chatSuggestedName,
+        };
+      }
+      chatProject = name;
+      const saved = chatStreamState[name];
+      if (saved) {
+        chatStreaming = saved.streaming;
+        chatStreamBuffer = saved.buffer;
+        chatPendingSpec = saved.pendingSpec;
+        chatSuggestedName = saved.suggestedName;
+      } else {
+        chatStreaming = false;
+        chatStreamBuffer = '';
+        chatPendingSpec = null;
+        chatSuggestedName = '';
+      }
+      await fetchChatHistory();
       await fetchState();
       await fetchProjects();
     } else {
@@ -1474,6 +1556,8 @@ let chatStreaming = false;
 let chatStreamBuffer = '';
 let chatPendingSpec = null;
 let chatSuggestedName = '';
+// Per-project chat streaming state so switching doesn't lose responses
+const chatStreamState = {}; // { projectName: { streaming, buffer, pendingSpec, suggestedName } }
 
 function renderChat() {
   const c = document.getElementById('tab-chat');
@@ -1482,10 +1566,13 @@ function renderChat() {
     const cls = isUser ? 'chat-msg-user' : 'chat-msg-pm';
     const label = isUser ? 'You' : 'PM Agent';
     const time = m.at ? new Date(m.at).toLocaleTimeString() : '';
-    const content = isUser ? escapeHtml(m.text) : formatMarkdown(m.text);
+    const rawContent = isUser ? escapeHtml(m.text) : formatMarkdown(m.text);
+    // Parse ACTION lines from PM responses and render action cards
+    const actionCards = !isUser ? renderActionCards(m.text, i) : '';
     return `<div class="chat-msg ${cls}">
       <div class="chat-msg-label">${label}</div>
-      <div class="chat-msg-content">${content}</div>
+      <div class="chat-msg-content">${rawContent}</div>
+      ${actionCards}
       ${time ? `<div class="chat-msg-time">${time}</div>` : ''}
     </div>`;
   }).join('');
@@ -1517,7 +1604,7 @@ function renderChat() {
       ${chatMessages.length === 0 && !chatStreaming ? `<div style="text-align:center;color:var(--text-muted);font-size:12px;padding:40px 20px;">
         <div style="font-size:24px;margin-bottom:8px;">&#9672;</div>
         <div style="font-weight:600;margin-bottom:4px;">Chat with PM Agent</div>
-        <div>Describe your project idea and the PM will help you create a structured spec.</div>
+        <div>Describe your project idea and the PM will help you create a structured spec. Use the dropdown to select which project to chat about.</div>
       </div>` : msgs + typing}
     </div>
     ${specBanner}
@@ -1530,10 +1617,70 @@ function renderChat() {
   if (feed) feed.scrollTop = feed.scrollHeight;
 }
 
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
+function renderActionCards(text, msgIdx) {
+  if (!text) return '';
+  const actionRegex = /^ACTION:\s*(\{.+\})$/gm;
+  const cards = [];
+  let match;
+  while ((match = actionRegex.exec(text)) !== null) {
+    try {
+      const action = JSON.parse(match[1]);
+      const actionIdx = cards.length;
+      const cardId = `chat-action-${msgIdx}-${actionIdx}`;
+      let desc = '';
+      if (action.type === 'move-ticket') {
+        desc = `Move <strong>${escapeHtml(action.ticketId)}</strong> to <strong>${escapeHtml(action.toStatus)}</strong>${action.note ? ' — ' + escapeHtml(action.note) : ''}`;
+      } else if (action.type === 'create-ticket') {
+        desc = `Create ticket: <strong>${escapeHtml(action.title)}</strong> (${escapeHtml(action.priority || 'medium')})`;
+      }
+      cards.push(`<div class="chat-action-card" id="${cardId}">
+        <div class="chat-action-card-title">${escapeHtml(action.type)} ${action.project ? '@ ' + escapeHtml(action.project) : ''}</div>
+        <div class="chat-action-card-desc">${desc}</div>
+        <div class="chat-action-btns">
+          <button class="chat-action-confirm" onclick="confirmChatAction(${msgIdx}, ${actionIdx}, this)">Confirm</button>
+          <button class="chat-action-dismiss" onclick="this.closest('.chat-action-card').style.opacity='0.4';this.closest('.chat-action-btns').innerHTML='<span style=\\'font-size:10px;color:var(--text-muted)\\'>Dismissed</span>'">Dismiss</button>
+        </div>
+      </div>`);
+    } catch (e) { /* invalid JSON, skip */ }
+  }
+  return cards.join('');
+}
+
+async function confirmChatAction(msgIdx, actionIdx, btn) {
+  const msg = chatMessages[msgIdx];
+  if (!msg) return;
+  const actionRegex = /^ACTION:\s*(\{.+\})$/gm;
+  const actions = [];
+  let match;
+  while ((match = actionRegex.exec(msg.text)) !== null) {
+    try { actions.push(JSON.parse(match[1])); } catch (e) { /* skip */ }
+  }
+  const action = actions[actionIdx];
+  if (!action) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Executing...';
+  try {
+    const res = await fetch('/api/chat/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(`Action completed: ${action.type}`, 'success');
+      btn.closest('.chat-action-btns').innerHTML = '<span style="font-size:10px;color:var(--done);font-weight:600">Done</span>';
+      fetchState();
+    } else {
+      showToast(data.error || 'Action failed', 'error');
+      btn.disabled = false;
+      btn.textContent = 'Confirm';
+    }
+  } catch (e) {
+    showToast('Network error', 'error');
+    btn.disabled = false;
+    btn.textContent = 'Confirm';
+  }
 }
 
 function formatMarkdown(text) {
@@ -1558,18 +1705,22 @@ async function sendChatMessage() {
   if (!input) return;
   const text = input.value.trim();
   if (!text || chatStreaming) return;
+  const cp = chatProject || STATE?.activeProject;
   chatStreaming = true;
   chatStreamBuffer = '';
   chatPendingSpec = null;
+  // Also init the saved stream state so background handling works
+  chatStreamState[cp] = { streaming: true, buffer: '', pendingSpec: null, suggestedName: '' };
   chatMessages.push({ role: 'user', text, at: new Date().toISOString() });
   renderChat();
   try {
-    await fetch('/api/chat/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text }) });
+    await fetch('/api/chat/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text, project: cp }) });
   } catch (e) { chatStreaming = false; showToast('Failed to send message', 'error'); renderChat(); }
 }
 
 async function clearChat() {
-  try { await fetch('/api/chat/clear', { method: 'POST' }); chatMessages = []; chatStreaming = false; chatStreamBuffer = ''; chatPendingSpec = null; renderChat(); }
+  const cp = chatProject || STATE?.activeProject;
+  try { await fetch('/api/chat/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: cp }) }); chatMessages = []; chatStreaming = false; chatStreamBuffer = ''; chatPendingSpec = null; renderChat(); }
   catch (e) { showToast('Failed to clear chat', 'error'); }
 }
 
@@ -1590,7 +1741,8 @@ async function saveChatSpec() {
 }
 
 async function fetchChatHistory() {
-  try { const res = await fetch('/api/chat/history'); const data = await res.json(); chatMessages = data.messages || []; } catch (e) { /* ignore */ }
+  const cp = chatProject || STATE?.activeProject || '';
+  try { const res = await fetch(`/api/chat/history?project=${encodeURIComponent(cp)}`); const data = await res.json(); chatMessages = data.messages || []; } catch (e) { /* ignore */ }
 }
 
 // ── Tabs ─────────────────────────────────────────────────────────────────────

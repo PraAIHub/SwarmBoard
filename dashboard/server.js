@@ -148,17 +148,58 @@ function scaffoldProject(name, spec, displayName) {
   }, null, 2));
 }
 
-// ── Orchestrator ────────────────────────────────────────────────────────────
-const orch = new Orchestrator(path.resolve(__dirname, '..'));
+// ── Orchestrators (per-project) ──────────────────────────────────────────────
+const PROJECT_ROOT = path.resolve(__dirname, '..');
+const orchestrators = new Map(); // Map<projectName, Orchestrator>
 
-// Forward orchestrator events to SSE
-orch.on('agent-update', data => broadcast('agent-update', data));
-orch.on('agent-output', data => broadcast('agent-output', data));
-orch.on('agent-blocked', data => broadcast('agent-blocked', data));
-orch.on('mode-change', data => broadcast('mode-change', data));
-orch.on('log', data => broadcast('orchestrator-log', data));
-orch.on('board-change', data => broadcast('state-update', data));
-orch.on('rate-limit', data => broadcast('rate-limit', data));
+function sanitizeProjectName(name) {
+  // Prevent path traversal — strip anything that isn't alphanumeric, dash, underscore, or space
+  if (!name || typeof name !== 'string') return null;
+  const clean = name.replace(/[^a-zA-Z0-9 _-]/g, '');
+  if (!clean || clean !== name) return null; // reject if sanitization changed the input
+  return clean;
+}
+
+function getOrCreateOrchestrator(projectName) {
+  if (orchestrators.has(projectName)) return orchestrators.get(projectName);
+
+  const projectDir = path.join(PROJECTS_DIR, projectName);
+  // Safety: verify the resolved path is inside PROJECTS_DIR
+  if (!path.resolve(projectDir).startsWith(path.resolve(PROJECTS_DIR))) {
+    throw new Error(`Invalid project name: ${projectName}`);
+  }
+  const orch = new Orchestrator(PROJECT_ROOT, projectDir);
+
+  // Forward orchestrator events to SSE with project tag
+  orch.on('agent-update', data => broadcast('agent-update', { ...data, project: projectName }));
+  orch.on('agent-output', data => broadcast('agent-output', { ...data, project: projectName }));
+  orch.on('agent-blocked', data => broadcast('agent-blocked', { ...data, project: projectName }));
+  orch.on('mode-change', data => broadcast('mode-change', { ...data, project: projectName }));
+  orch.on('log', data => broadcast('orchestrator-log', { ...data, project: projectName }));
+  orch.on('board-change', data => broadcast('state-update', { ...data, project: projectName }));
+  orch.on('rate-limit', data => {
+    broadcast('rate-limit', { ...data, project: projectName });
+    // Cross-project rate limiting: stop ALL agents across ALL orchestrators
+    for (const [otherName, otherOrch] of orchestrators) {
+      if (otherName !== projectName) {
+        otherOrch.stopAll();
+        otherOrch.rateLimitState = { detected: true, resetInfo: data.resetInfo, at: data.at };
+        otherOrch.addLog('error', `Rate limit detected on project "${projectName}" — stopping all agents (account-level limit)`);
+      }
+    }
+  });
+
+  orch.cleanupZombies();
+  orchestrators.set(projectName, orch);
+  return orch;
+}
+
+// Resolve orchestrator from request (query, body, or fallback to active project)
+function orchFor(req) {
+  const raw = req.query?.project || req.body?.project || ctx.projectName;
+  const project = sanitizeProjectName(raw) || ctx.projectName;
+  return getOrCreateOrchestrator(project);
+}
 
 // ── SSE Clients ─────────────────────────────────────────────────────────────
 let sseClients = [];
@@ -186,11 +227,14 @@ function readText(filepath) {
   }
 }
 
-function getFullState() {
-  const board = readJSON(ctx.boardFile);
+function getFullState(projectName) {
+  const pName = projectName || ctx.projectName;
+  const pDir = path.join(PROJECTS_DIR, pName);
+  const orch = getOrCreateOrchestrator(pName);
+  const board = readJSON(path.join(pDir, 'board.json'));
   const schema = readJSON(SCHEMA_FILE);
-  const sprint = readJSON(ctx.sprintFile);
-  const blackboard = readText(ctx.blackboardFile);
+  const sprint = readJSON(path.join(pDir, 'sprints', 'current.json'));
+  const blackboard = readText(path.join(pDir, 'blackboard.md'));
 
   // Parse blackboard signals
   const signals = [];
@@ -236,15 +280,25 @@ function getFullState() {
     if (isHalted) alerts.push({ level: 'error', message: 'SPRINT HALTED — all agents should be stopped' });
   }
 
-  // Merge orchestrator agent states (real process info) over board-derived statuses
+  // Merge orchestrator agent states (real process info) over board-derived statuses.
+  // Orchestrator is the authoritative source for whether a process is actually running.
   const orchAgents = orch.getAgentStates();
   for (const a of agents) {
     const oa = orchAgents[a.role];
     if (oa) {
-      // Orchestrator has authoritative process state
-      if (oa.status !== 'idle' || oa.current) {
+      if (oa.pid) {
+        // Process is actually running — use orchestrator status
         a.status = oa.status === 'running' ? 'working' : oa.status;
         a.current = oa.current || a.current;
+      } else if (oa.status === 'stopped' || oa.status === 'error' || oa.status === 'rate-limited' || oa.status === 'blocked') {
+        // Explicit non-idle state from orchestrator overrides board-derived status
+        a.status = oa.status;
+      } else {
+        // Process not running and orchestrator says idle — use board-derived status
+        // but only if the board-derived status isn't "working" (stale assignee)
+        if (a.status === 'working' && !oa.pid) {
+          a.status = 'idle';
+        }
       }
       a.pid = oa.pid;
       a.log = oa.log || [];
@@ -257,7 +311,8 @@ function getFullState() {
     raw_blackboard: blackboard,
     autoMode: orch.autoMode,
     orchestratorLog: orch.log.slice(-50),
-    activeProject: ctx.projectName,
+    activeProject: pName,
+    project: pName,
   };
 }
 
@@ -286,8 +341,9 @@ app.get('/api/events', (req, res) => {
 
 // Approve ticket (groomed → dev-ready)
 app.post('/api/actions/approve', (req, res) => {
+  const orch = orchFor(req);
   const { ticketId } = req.body;
-  const board = readJSON(ctx.boardFile);
+  const board = readJSON(orch.boardPath);
   if (!board) return res.status(500).json({ error: 'Cannot read board.json' });
 
   const ticket = board.tickets.find(t => t.id === ticketId);
@@ -304,15 +360,16 @@ app.post('/api/actions/approve', (req, res) => {
   });
   board.last_updated = new Date().toISOString();
 
-  fs.writeFileSync(ctx.boardFile, JSON.stringify(board, null, 2));
-  writeHistory(ticketId, 'groomed', 'dev-ready', 'Approved by human via dashboard');
+  fs.writeFileSync(orch.boardPath, JSON.stringify(board, null, 2));
+  writeHistoryTo(orch.historyDir, ticketId, 'groomed', 'dev-ready', 'Approved by human via dashboard');
   res.json({ ok: true, ticket });
 });
 
 // Block ticket
 app.post('/api/actions/block', (req, res) => {
+  const orch = orchFor(req);
   const { ticketId, reason } = req.body;
-  const board = readJSON(ctx.boardFile);
+  const board = readJSON(orch.boardPath);
   if (!board) return res.status(500).json({ error: 'Cannot read board.json' });
 
   const ticket = board.tickets.find(t => t.id === ticketId);
@@ -329,21 +386,22 @@ app.post('/api/actions/block', (req, res) => {
   });
   board.last_updated = new Date().toISOString();
 
-  fs.writeFileSync(ctx.boardFile, JSON.stringify(board, null, 2));
+  fs.writeFileSync(orch.boardPath, JSON.stringify(board, null, 2));
 
   // Also post to blackboard
   const signal = `\n## [blocker] ${ticket.title} blocked — human — ${new Date().toISOString()}\n${reason || 'Blocked via dashboard'}\nAffects: ${ticketId}\n`;
-  fs.appendFileSync(ctx.blackboardFile, signal);
+  fs.appendFileSync(orch.blackboardPath, signal);
 
-  writeHistory(ticketId, prevStatus, 'blocked', `Blocked by human: ${reason}`);
+  writeHistoryTo(orch.historyDir, ticketId, prevStatus, 'blocked', `Blocked by human: ${reason}`);
   res.json({ ok: true, ticket });
 });
 
 // Halt sprint
 app.post('/api/actions/halt', (req, res) => {
+  const orch = orchFor(req);
   const { reason } = req.body;
-  const board = readJSON(ctx.boardFile);
-  const sprint = readJSON(ctx.sprintFile);
+  const board = readJSON(path.join(orch.projectDir, 'board.json'));
+  const sprint = readJSON(path.join(orch.projectDir, 'sprints', 'current.json'));
   if (!board) return res.status(500).json({ error: 'Cannot read board.json' });
 
   const haltedTickets = [];
@@ -364,16 +422,16 @@ app.post('/api/actions/halt', (req, res) => {
     }
   });
   board.last_updated = new Date().toISOString();
-  fs.writeFileSync(ctx.boardFile, JSON.stringify(board, null, 2));
+  fs.writeFileSync(orch.boardPath, JSON.stringify(board, null, 2));
 
   // Post halt signal
   const signal = `\n## [halt] SPRINT HALTED — human — ${new Date().toISOString()}\n${reason || 'Halted via dashboard'}\nAll agents must stop. Do not pick new work.\nAffects: ALL TICKETS\n`;
-  fs.appendFileSync(ctx.blackboardFile, signal);
+  fs.appendFileSync(orch.blackboardPath, signal);
 
   // Update sprint status
   if (sprint) {
     sprint.status = 'halted';
-    fs.writeFileSync(ctx.sprintFile, JSON.stringify(sprint, null, 2));
+    fs.writeFileSync(orch.sprintPath, JSON.stringify(sprint, null, 2));
   }
 
   // History
@@ -385,7 +443,7 @@ app.post('/api/actions/halt', (req, res) => {
     tickets_halted: haltedTickets,
     previous_states: previousStates
   };
-  const histFile = path.join(ctx.historyDir, `${new Date().toISOString().replace(/[:.]/g, '-')}-sprint-halted.json`);
+  const histFile = path.join(orch.historyDir, `${new Date().toISOString().replace(/[:.]/g, '-')}-sprint-halted.json`);
   fs.writeFileSync(histFile, JSON.stringify(haltHistory, null, 2));
 
   // Stop all orchestrator agents
@@ -396,23 +454,25 @@ app.post('/api/actions/halt', (req, res) => {
 
 // Post signal to blackboard
 app.post('/api/actions/signal', (req, res) => {
+  const orch = orchFor(req);
   const { type, title, detail, affects } = req.body;
   const signal = `\n## [${type}] ${title} — human — ${new Date().toISOString()}\n${detail || ''}\nAffects: ${affects || 'N/A'}\n`;
-  fs.appendFileSync(ctx.blackboardFile, signal);
+  fs.appendFileSync(orch.blackboardPath, signal);
   res.json({ ok: true });
 });
 
 // Resume from halt
 app.post('/api/actions/resume', (req, res) => {
-  const board = readJSON(ctx.boardFile);
-  const sprint = readJSON(ctx.sprintFile);
+  const orch = orchFor(req);
+  const board = readJSON(orch.boardPath);
+  const sprint = readJSON(orch.sprintPath);
   if (!board) return res.status(500).json({ error: 'Cannot read board.json' });
 
   // Find the most recent halt history to get previous states
-  const histFiles = fs.readdirSync(ctx.historyDir).filter(f => f.includes('sprint-halted')).sort().reverse();
+  const histFiles = fs.readdirSync(orch.historyDir).filter(f => f.includes('sprint-halted')).sort().reverse();
   let previousStates = {};
   if (histFiles.length > 0) {
-    const haltData = readJSON(path.join(ctx.historyDir, histFiles[0]));
+    const haltData = readJSON(path.join(orch.historyDir, histFiles[0]));
     if (haltData) previousStates = haltData.previous_states || {};
   }
 
@@ -430,22 +490,23 @@ app.post('/api/actions/resume', (req, res) => {
     }
   });
   board.last_updated = new Date().toISOString();
-  fs.writeFileSync(ctx.boardFile, JSON.stringify(board, null, 2));
+  fs.writeFileSync(orch.boardPath, JSON.stringify(board, null, 2));
 
   if (sprint) {
     sprint.status = 'active';
-    fs.writeFileSync(ctx.sprintFile, JSON.stringify(sprint, null, 2));
+    fs.writeFileSync(orch.sprintPath, JSON.stringify(sprint, null, 2));
   }
 
   // Remove halt from blackboard
-  let bb = readText(ctx.blackboardFile);
+  let bb = readText(orch.blackboardPath);
   bb = bb.replace(/\n## \[halt\][\s\S]*?(?=\n## \[|$)/g, '');
-  fs.writeFileSync(ctx.blackboardFile, bb);
+  fs.writeFileSync(orch.blackboardPath, bb);
 
   // Clear rate limit flag and reset agent statuses
+  // Note: 'stopped' agents stay stopped — only manual start clears that
   orch.rateLimitState = { detected: false, resetInfo: null };
   for (const role of Object.keys(orch.agents)) {
-    if (orch.agents[role].status === 'rate-limited' || orch.agents[role].status === 'stopped') {
+    if (orch.agents[role].status === 'rate-limited') {
       orch.agents[role].status = 'idle';
     }
   }
@@ -455,26 +516,29 @@ app.post('/api/actions/resume', (req, res) => {
   res.json({ ok: true });
 });
 
-// Clear rate limit flag (without resuming halted tickets)
+// Clear rate limit flag (without resuming halted tickets) — clears ALL orchestrators
 app.post('/api/actions/clear-rate-limit', (req, res) => {
-  orch.rateLimitState = { detected: false, resetInfo: null };
-  for (const role of Object.keys(orch.agents)) {
-    if (orch.agents[role].status === 'rate-limited') {
-      orch.agents[role].status = 'idle';
+  for (const [, o] of orchestrators) {
+    o.rateLimitState = { detected: false, resetInfo: null };
+    for (const role of Object.keys(o.agents)) {
+      if (o.agents[role].status === 'rate-limited') {
+        o.agents[role].status = 'idle';
+      }
     }
+    o.addLog('info', 'Rate limit cleared by human');
+    o.emit('agent-update', o.getAgentStates());
+    if (o.autoMode) o.evaluateAndDispatch();
   }
-  orch.addLog('info', 'Rate limit cleared by human');
-  orch.emit('agent-update', orch.getAgentStates());
-  if (orch.autoMode) orch.evaluateAndDispatch();
   res.json({ ok: true });
 });
 
 // Move ticket to any valid status (human override)
 app.post('/api/actions/move-ticket', (req, res) => {
+  const orch = orchFor(req);
   const { ticketId, toStatus, note } = req.body;
   if (!ticketId || !toStatus) return res.status(400).json({ error: 'ticketId and toStatus are required' });
 
-  const board = readJSON(ctx.boardFile);
+  const board = readJSON(orch.boardPath);
   const schema = readJSON(SCHEMA_FILE);
   if (!board) return res.status(500).json({ error: 'Cannot read board.json' });
   if (!schema) return res.status(500).json({ error: 'Cannot read schema.json' });
@@ -508,16 +572,17 @@ app.post('/api/actions/move-ticket', (req, res) => {
     note: note || 'Moved via dashboard'
   });
   board.last_updated = new Date().toISOString();
-  fs.writeFileSync(ctx.boardFile, JSON.stringify(board, null, 2));
-  writeHistory(ticketId, fromStatus, toStatus, note || 'Moved via dashboard');
+  fs.writeFileSync(orch.boardPath, JSON.stringify(board, null, 2));
+  writeHistoryTo(orch.historyDir, ticketId, fromStatus, toStatus, note || 'Moved via dashboard');
 
   res.json({ ok: true, ticket });
 });
 
 // Reset sprint (back to planning)
 app.post('/api/actions/reset-sprint', (req, res) => {
-  const board = readJSON(ctx.boardFile);
-  const sprint = readJSON(ctx.sprintFile);
+  const orch = orchFor(req);
+  const board = readJSON(orch.boardPath);
+  const sprint = readJSON(orch.sprintPath);
   if (!board) return res.status(500).json({ error: 'Cannot read board.json' });
   if (!sprint) return res.status(500).json({ error: 'Cannot read sprint file' });
 
@@ -541,14 +606,14 @@ app.post('/api/actions/reset-sprint', (req, res) => {
         note: 'Reverted via sprint reset'
       });
       reverted.push(t.id);
-      writeHistory(t.id, fromStatus, 'groomed', 'Reverted via sprint reset');
+      writeHistoryTo(orch.historyDir, t.id, fromStatus, 'groomed', 'Reverted via sprint reset');
     }
   });
   board.last_updated = new Date().toISOString();
-  fs.writeFileSync(ctx.boardFile, JSON.stringify(board, null, 2));
+  fs.writeFileSync(orch.boardPath, JSON.stringify(board, null, 2));
 
   sprint.status = 'planning';
-  fs.writeFileSync(ctx.sprintFile, JSON.stringify(sprint, null, 2));
+  fs.writeFileSync(orch.sprintPath, JSON.stringify(sprint, null, 2));
 
   orch.addLog('info', `Sprint reset to planning — ${reverted.length} tickets reverted to groomed`);
   res.json({ ok: true, reverted });
@@ -556,8 +621,9 @@ app.post('/api/actions/reset-sprint', (req, res) => {
 
 // Reprioritize
 app.post('/api/actions/reprioritize', (req, res) => {
+  const orch = orchFor(req);
   const { ticketId, priority } = req.body;
-  const board = readJSON(ctx.boardFile);
+  const board = readJSON(orch.boardPath);
   if (!board) return res.status(500).json({ error: 'Cannot read board.json' });
 
   const ticket = board.tickets.find(t => t.id === ticketId);
@@ -573,7 +639,7 @@ app.post('/api/actions/reprioritize', (req, res) => {
     note: `Priority changed from ${prev} to ${priority} via dashboard`
   });
   board.last_updated = new Date().toISOString();
-  fs.writeFileSync(ctx.boardFile, JSON.stringify(board, null, 2));
+  fs.writeFileSync(orch.boardPath, JSON.stringify(board, null, 2));
   res.json({ ok: true, ticket });
 });
 
@@ -581,16 +647,17 @@ app.post('/api/actions/reprioritize', (req, res) => {
 
 // Start sprint: planning → active, auto-approve groomed tickets, enable dispatch
 app.post('/api/actions/start-sprint', (req, res) => {
-  const sprint = readJSON(ctx.sprintFile);
+  const orch = orchFor(req);
+  const sprint = readJSON(orch.sprintPath);
   if (!sprint) return res.status(500).json({ error: 'Cannot read sprint file' });
   if (sprint.status !== 'planning') return res.status(400).json({ error: `Sprint is ${sprint.status}, not planning` });
 
   // Move sprint to active
   sprint.status = 'active';
-  fs.writeFileSync(ctx.sprintFile, JSON.stringify(sprint, null, 2));
+  fs.writeFileSync(orch.sprintPath, JSON.stringify(sprint, null, 2));
 
   // Auto-approve all groomed tickets
-  const board = readJSON(ctx.boardFile);
+  const board = readJSON(orch.boardPath);
   const approved = [];
   if (board) {
     board.tickets.forEach(t => {
@@ -604,11 +671,11 @@ app.post('/api/actions/start-sprint', (req, res) => {
           note: 'Auto-approved via Start Sprint'
         });
         approved.push(t.id);
-        writeHistory(t.id, 'groomed', 'dev-ready', 'Auto-approved via Start Sprint');
+        writeHistoryTo(orch.historyDir, t.id, 'groomed', 'dev-ready', 'Auto-approved via Start Sprint');
       }
     });
     board.last_updated = new Date().toISOString();
-    fs.writeFileSync(ctx.boardFile, JSON.stringify(board, null, 2));
+    fs.writeFileSync(orch.boardPath, JSON.stringify(board, null, 2));
   }
 
   // Enable auto-dispatch
@@ -620,6 +687,7 @@ app.post('/api/actions/start-sprint', (req, res) => {
 
 // Start a specific agent (manual = true so it clears 'stopped' status)
 app.post('/api/actions/agents/:role/start', async (req, res) => {
+  const orch = orchFor(req);
   const { role } = req.params;
   if (!orch.agents[role]) return res.status(404).json({ error: `Unknown agent role: ${role}` });
 
@@ -629,6 +697,7 @@ app.post('/api/actions/agents/:role/start', async (req, res) => {
 
 // Stop a specific agent
 app.post('/api/actions/agents/:role/stop', (req, res) => {
+  const orch = orchFor(req);
   const { role } = req.params;
   if (!orch.agents[role]) return res.status(404).json({ error: `Unknown agent role: ${role}` });
 
@@ -638,6 +707,7 @@ app.post('/api/actions/agents/:role/stop', (req, res) => {
 
 // Toggle auto-dispatch
 app.post('/api/actions/dispatch/toggle', (req, res) => {
+  const orch = orchFor(req);
   if (orch.autoMode) {
     orch.stopAutoMode();
   } else {
@@ -648,8 +718,9 @@ app.post('/api/actions/dispatch/toggle', (req, res) => {
 
 // Get full agent log from disk
 app.get('/api/agents/:role/log', (req, res) => {
+  const orch = orchFor(req);
   const { role } = req.params;
-  const logFile = path.join(ctx.logsDir, `${role}.log`);
+  const logFile = path.join(orch.logsDir, `${role}.log`);
   try {
     const content = fs.readFileSync(logFile, 'utf-8');
     const lines = content.trim().split('\n').filter(l => l.trim()).map(l => {
@@ -663,6 +734,7 @@ app.get('/api/agents/:role/log', (req, res) => {
 
 // Get agent states
 app.get('/api/agents', (req, res) => {
+  const orch = orchFor(req);
   res.json({
     agents: orch.getAgentStates(),
     autoMode: orch.autoMode,
@@ -672,10 +744,11 @@ app.get('/api/agents', (req, res) => {
 
 // Create a new ticket
 app.post('/api/actions/create-ticket', (req, res) => {
+  const orch = orchFor(req);
   const { title, type, priority, description } = req.body;
   if (!title) return res.status(400).json({ error: 'Title is required' });
 
-  const board = readJSON(ctx.boardFile);
+  const board = readJSON(orch.boardPath);
   if (!board) return res.status(500).json({ error: 'Cannot read board.json' });
 
   // Generate next ticket ID
@@ -709,9 +782,9 @@ app.post('/api/actions/create-ticket', (req, res) => {
 
   board.tickets.push(newTicket);
   board.last_updated = new Date().toISOString();
-  fs.writeFileSync(ctx.boardFile, JSON.stringify(board, null, 2));
+  fs.writeFileSync(orch.boardPath, JSON.stringify(board, null, 2));
 
-  writeHistory(ticketId, 'none', 'new', 'Created via dashboard');
+  writeHistoryTo(orch.historyDir, ticketId, 'none', 'new', 'Created via dashboard');
   orch.addLog('info', `New ticket created: ${ticketId} — ${title}`);
 
   res.json({ ok: true, ticket: newTicket });
@@ -730,37 +803,40 @@ app.get('/api/projects', (req, res) => {
     const sprintPath = path.join(PROJECTS_DIR, name, 'sprints', 'current.json');
     const board = readJSON(boardPath);
     const sprint = readJSON(sprintPath);
+    // Include live agent info if orchestrator exists
+    const orch = orchestrators.get(name);
+    const activeAgents = orch
+      ? Object.values(orch.agents).filter(a => a.process).length
+      : 0;
     return {
       name,
       displayName: board?.project || name,
       ticketCount: board?.tickets?.length || 0,
       sprintStatus: sprint?.status || 'unknown',
       active: name === ctx.projectName,
+      activeAgents,
+      autoMode: orch?.autoMode || false,
     };
   });
   res.json({ projects });
 });
 
-// Switch active project
+// Switch active project (UI context only — does NOT stop agents on any project)
 app.post('/api/projects/switch', (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: 'Project name is required' });
   const projectDir = path.join(PROJECTS_DIR, name);
   if (!fs.existsSync(projectDir)) return res.status(404).json({ error: `Project "${name}" not found` });
 
-  // Stop all agents before switching
-  orch.stopAll();
-
   setActiveProject(name);
-  orch.repoint(ctx.projectDir);
+  getOrCreateOrchestrator(name); // ensure orchestrator exists
   startWatcher();
 
   // Persist to config
   fs.writeFileSync(CONFIG_FILE, JSON.stringify({ activeProject: name }, null, 2));
 
-  orch.addLog('info', `Switched to project: ${name}`);
-  const state = getFullState();
-  broadcast('state-update', state);
+  const state = getFullState(name);
+  broadcast('state-update', { ...state, project: name });
   broadcast('project-switch', { name });
   res.json({ ok: true, activeProject: name });
 });
@@ -787,22 +863,24 @@ app.post('/api/projects/create', (req, res) => {
 
 // ── PM Chat ─────────────────────────────────────────────────────────────────
 
-let chatProcess = null; // Active claude -p process for chat
+const chatProcesses = new Map(); // Map<projectName, pty process> — per-project chat processes
 
-function getChatFile() {
-  return path.join(ctx.projectDir, 'chat.json');
+function getChatFile(project) {
+  const pName = sanitizeProjectName(project) || ctx.projectName;
+  const pDir = path.join(PROJECTS_DIR, pName);
+  return path.join(pDir, 'chat.json');
 }
 
-function readChatHistory() {
+function readChatHistory(project) {
   try {
-    return JSON.parse(fs.readFileSync(getChatFile(), 'utf-8'));
+    return JSON.parse(fs.readFileSync(getChatFile(project), 'utf-8'));
   } catch (e) {
     return [];
   }
 }
 
-function saveChatHistory(messages) {
-  fs.writeFileSync(getChatFile(), JSON.stringify(messages, null, 2));
+function saveChatHistory(messages, project) {
+  fs.writeFileSync(getChatFile(project), JSON.stringify(messages, null, 2));
 }
 
 function stripAnsi(text) {
@@ -824,29 +902,51 @@ function cleanFinalResponse(text) {
     .trim();
 }
 
-function buildChatPrompt(history, newMessage) {
-  const board = readJSON(ctx.boardFile);
-  const projectName = board?.project || ctx.projectName || 'Unknown';
+function buildChatPrompt(history, newMessage, targetProject) {
+  const pName = targetProject || ctx.projectName;
+  const pDir = path.join(PROJECTS_DIR, pName);
+  const board = readJSON(path.join(pDir, 'board.json'));
+  const projectName = board?.project || pName || 'Unknown';
   const existingSpec = board?.spec || 'SPEC.md';
   let specContent = '';
-  const specPath = path.join(ctx.projectDir, existingSpec);
+  const specPath = path.join(pDir, existingSpec);
   if (fs.existsSync(specPath)) {
     try { specContent = fs.readFileSync(specPath, 'utf-8'); } catch (e) { /* ignore */ }
   }
 
-  let prompt = `You are a PM agent helping design a project spec. You are having an interactive conversation with a human to understand their project idea and help them create a structured SPEC.md.
+  // Build ticket summary for board context
+  const tickets = board?.tickets || [];
+  let ticketSummary = '';
+  if (tickets.length > 0) {
+    ticketSummary = '\nCurrent board tickets:\n';
+    tickets.forEach(t => {
+      ticketSummary += `- ${t.id}: ${t.title} [${t.status}] (${t.priority})${t.assignee ? ' assigned:' + t.assignee : ''}\n`;
+    });
+  }
 
-The user may be working on the current project "${projectName}" OR describing an entirely new project idea. Pay attention to what they say — if they mention a new idea or a different project name, help them spec THAT project, not the current one.
+  let prompt = `You are a PM agent helping manage the project "${projectName}". You are having an interactive conversation with a human.
 
 Your responsibilities:
-- Ask clarifying questions about the project scope, features, and requirements
+- Help design and refine project specs
 - Help organize ideas into a clear spec structure
-- When the user is ready, generate a complete SPEC.md with sections: Overview, Goals, Architecture, Features (with acceptance criteria), Tech Stack, and Non-Goals
+- Answer questions about the board, tickets, and sprint status
+- Suggest ticket actions when appropriate (move tickets, create tickets)
 - Keep responses concise and focused
 - Use markdown formatting in your responses
 
-When you generate the final spec, output it in a markdown code block tagged as \`\`\`spec so the system can detect it. Also include a project name suggestion on a separate line before the spec block like: PROJECT_NAME: My New Project
-`;
+When you generate a spec, output it in a markdown code block tagged as \`\`\`spec so the system can detect it. Also include a project name suggestion on a separate line before the spec block like: PROJECT_NAME: My New Project
+
+BOARD ACTIONS:
+You can suggest board actions that the user can confirm. Output them on their own line in this exact format:
+ACTION: {"type":"move-ticket","project":"${pName}","ticketId":"TICKET-001","toStatus":"dev-ready","note":"Reason for move"}
+ACTION: {"type":"create-ticket","project":"${pName}","title":"Ticket title","priority":"high","description":"Details"}
+
+Rules for actions:
+- Always explain WHY you're suggesting an action before outputting the ACTION line
+- For destructive actions (blocking, halting), always ask the user to confirm first
+- You can suggest multiple actions in one response
+- The user will see a confirmation button — the action only executes when they confirm
+${ticketSummary}`;
 
   if (specContent) {
     prompt += `\nThe current project already has an existing spec:\n\`\`\`\n${specContent.substring(0, 3000)}\n\`\`\`\n\nThe user may want to refine this spec OR start something new.\n`;
@@ -866,35 +966,45 @@ When you generate the final spec, output it in a markdown code block tagged as \
 
 // Get chat history
 app.get('/api/chat/history', (req, res) => {
-  res.json({ messages: readChatHistory() });
+  const project = req.query.project || ctx.projectName;
+  res.json({ messages: readChatHistory(project), project });
 });
 
 // Clear chat history
 app.post('/api/chat/clear', (req, res) => {
-  if (chatProcess) {
-    try { chatProcess.kill(); } catch (e) { /* ignore */ }
-    chatProcess = null;
+  const project = req.body.project || ctx.projectName;
+  const existing = chatProcesses.get(project);
+  if (existing) {
+    try { existing.kill(); } catch (e) { /* ignore */ }
+    chatProcesses.delete(project);
   }
-  saveChatHistory([]);
+  saveChatHistory([], project);
   res.json({ ok: true });
 });
 
 // Send chat message — streams response via SSE
 app.post('/api/chat/send', (req, res) => {
   const { message } = req.body;
+  const project = req.body.project || ctx.projectName;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message is required' });
 
-  if (chatProcess) {
-    try { chatProcess.kill(); } catch (e) { /* ignore */ }
-    chatProcess = null;
+  // Kill any existing chat process for THIS project only
+  const existingProc = chatProcesses.get(project);
+  if (existingProc) {
+    try { existingProc.kill(); } catch (e) { /* ignore */ }
+    chatProcesses.delete(project);
   }
 
-  const history = readChatHistory();
+  const history = readChatHistory(project);
   history.push({ role: 'user', text: message.trim(), at: new Date().toISOString() });
-  saveChatHistory(history);
+  saveChatHistory(history, project);
 
-  const prompt = buildChatPrompt(history.slice(0, -1), message.trim());
-  const promptFile = path.join(ctx.logsDir, 'chat-prompt.txt');
+  const pDir = path.join(PROJECTS_DIR, project);
+  const logsDir = path.join(pDir, 'logs');
+  try { fs.mkdirSync(logsDir, { recursive: true }); } catch (e) { /* exists */ }
+
+  const prompt = buildChatPrompt(history.slice(0, -1), message.trim(), project);
+  const promptFile = path.join(logsDir, 'chat-prompt.txt');
   fs.writeFileSync(promptFile, prompt);
 
   const cleanEnv = { ...process.env };
@@ -905,40 +1015,113 @@ app.post('/api/chat/send', (req, res) => {
     name: 'xterm-256color',
     cols: 120,
     rows: 40,
-    cwd: path.resolve(__dirname, '..'),
+    cwd: PROJECT_ROOT,
     env: cleanEnv,
   });
 
-  chatProcess = proc;
+  chatProcesses.set(project, proc);
   let fullResponse = '';
 
   proc.onData((raw) => {
     const text = stripAnsi(raw);
     fullResponse += text;
-    broadcast('chat-response', { chunk: text, done: false });
+    broadcast('chat-response', { project, chunk: text, done: false });
   });
 
   proc.onExit(({ exitCode }) => {
-    chatProcess = null;
+    chatProcesses.delete(project);
     const cleanResponse = cleanFinalResponse(fullResponse);
     if (cleanResponse) {
       history.push({ role: 'pm', text: cleanResponse, at: new Date().toISOString() });
-      saveChatHistory(history);
+      saveChatHistory(history, project);
 
       const specMatch = cleanResponse.match(/```spec\n([\s\S]*?)```/);
       if (specMatch) {
         const nameMatch = cleanResponse.match(/PROJECT_NAME:\s*(.+)/);
         const suggestedName = nameMatch ? nameMatch[1].trim() : null;
-        broadcast('chat-response', { chunk: '', done: true, hasSpec: true, spec: specMatch[1], suggestedName });
+        broadcast('chat-response', { project, chunk: '', done: true, hasSpec: true, spec: specMatch[1], suggestedName });
       } else {
-        broadcast('chat-response', { chunk: '', done: true });
+        broadcast('chat-response', { project, chunk: '', done: true });
       }
     } else {
-      broadcast('chat-response', { chunk: '', done: true, error: exitCode !== 0 });
+      broadcast('chat-response', { project, chunk: '', done: true, error: exitCode !== 0 });
     }
   });
 
   res.json({ ok: true, streaming: true });
+});
+
+// Execute a confirmed chat action (move-ticket, create-ticket)
+app.post('/api/chat/action', (req, res) => {
+  const { action } = req.body;
+  if (!action || !action.type) return res.status(400).json({ error: 'Action with type is required' });
+
+  const project = sanitizeProjectName(action.project) || ctx.projectName;
+  const pDir = path.join(PROJECTS_DIR, project);
+  const boardPath = path.join(pDir, 'board.json');
+  const historyDir = path.join(pDir, 'history');
+  const board = readJSON(boardPath);
+  if (!board) return res.status(500).json({ error: `Cannot read board for project "${project}"` });
+
+  if (action.type === 'move-ticket') {
+    const ticket = board.tickets.find(t => t.id === action.ticketId);
+    if (!ticket) return res.status(404).json({ error: `Ticket ${action.ticketId} not found` });
+
+    const fromStatus = ticket.status;
+    ticket.status = action.toStatus;
+    if (['new', 'groomed', 'dev-ready', 'review-ready', 'test-ready', 'changes-requested'].includes(action.toStatus)) {
+      ticket.assignee = null;
+    }
+    ticket.history.push({
+      from: fromStatus,
+      to: action.toStatus,
+      by: 'human-via-chat',
+      at: new Date().toISOString(),
+      note: action.note || 'Moved via PM chat action'
+    });
+    board.last_updated = new Date().toISOString();
+    fs.writeFileSync(boardPath, JSON.stringify(board, null, 2));
+    writeHistoryTo(historyDir, action.ticketId, fromStatus, action.toStatus, action.note || 'Moved via PM chat action');
+    res.json({ ok: true, ticket });
+
+  } else if (action.type === 'create-ticket') {
+    const existingIds = board.tickets.map(t => {
+      const m = t.id.match(/TICKET-(\d+)/);
+      return m ? parseInt(m[1]) : 0;
+    });
+    const nextNum = Math.max(0, ...existingIds) + 1;
+    const ticketId = `TICKET-${String(nextNum).padStart(3, '0')}`;
+
+    const newTicket = {
+      id: ticketId,
+      title: action.title || 'Untitled',
+      type: action.ticketType || 'feature',
+      priority: action.priority || 'medium',
+      status: 'new',
+      complexity: 'M',
+      description: action.description || '',
+      acceptance_criteria: [],
+      dev_notes: '',
+      depends_on: [],
+      assignee: null,
+      history: [{
+        from: null,
+        to: 'new',
+        by: 'human-via-chat',
+        at: new Date().toISOString(),
+        note: 'Created via PM chat action'
+      }]
+    };
+
+    board.tickets.push(newTicket);
+    board.last_updated = new Date().toISOString();
+    fs.writeFileSync(boardPath, JSON.stringify(board, null, 2));
+    writeHistoryTo(historyDir, ticketId, 'none', 'new', 'Created via PM chat action');
+    res.json({ ok: true, ticket: newTicket });
+
+  } else {
+    res.status(400).json({ error: `Unknown action type: ${action.type}` });
+  }
 });
 
 // Save spec from chat — optionally creates a new project
@@ -958,9 +1141,8 @@ app.post('/api/chat/save-spec', (req, res) => {
     }
     targetDir = projectDir;
 
-    orch.stopAll();
     setActiveProject(slug);
-    orch.repoint(ctx.projectDir);
+    getOrCreateOrchestrator(slug);
     startWatcher();
     fs.writeFileSync(CONFIG_FILE, JSON.stringify({ activeProject: slug }, null, 2));
     broadcast('project-switch', { name: slug });
@@ -979,7 +1161,7 @@ app.post('/api/chat/save-spec', (req, res) => {
 });
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
-function writeHistory(ticketId, from, to, note) {
+function writeHistoryTo(historyDir, ticketId, from, to, note) {
   const entry = {
     ticket: ticketId,
     from, to,
@@ -988,7 +1170,7 @@ function writeHistory(ticketId, from, to, note) {
     note
   };
   const filename = `${new Date().toISOString().replace(/[:.]/g, '-')}-${ticketId}-${to}.json`;
-  fs.writeFileSync(path.join(ctx.historyDir, filename), JSON.stringify(entry, null, 2) + '\n');
+  fs.writeFileSync(path.join(historyDir, filename), JSON.stringify(entry, null, 2) + '\n');
 }
 
 // ── File Watcher ────────────────────────────────────────────────────────────
@@ -1009,8 +1191,8 @@ function startWatcher() {
     console.log(`[watch] ${event}: ${path.relative(ctx.projectDir, filepath)}`);
     clearTimeout(watchDebounce);
     watchDebounce = setTimeout(() => {
-      const state = getFullState();
-      broadcast('state-update', state);
+      const state = getFullState(ctx.projectName);
+      broadcast('state-update', { ...state, project: ctx.projectName });
 
       // Log pipeline alerts
       state.alerts.forEach(a => {
@@ -1020,8 +1202,9 @@ function startWatcher() {
       });
 
       // In auto mode, check if there's new work to dispatch
-      if (orch.autoMode) {
-        orch.evaluateAndDispatch();
+      const watchOrch = orchestrators.get(ctx.projectName);
+      if (watchOrch && watchOrch.autoMode) {
+        watchOrch.evaluateAndDispatch();
       }
     }, 30000);  // 30s debounce on file watch
   });
@@ -1034,8 +1217,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Initialize project context, migrate if needed, start watcher
 initActiveProject();
-orch.repoint(ctx.projectDir);
-orch.cleanupZombies();
+getOrCreateOrchestrator(ctx.projectName);
 startWatcher();
 
 app.listen(PORT, () => {
