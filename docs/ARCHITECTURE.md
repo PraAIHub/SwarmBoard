@@ -40,8 +40,17 @@ The Agent Board solves these with three mechanisms: a **ticket state machine** (
 graph TB
     subgraph "Human Layer"
         H[Human]
+        DASH["Dashboard<br/>http://localhost:3456"]
+        CHAT["PM Chat<br/>(Chat tab)"]
         BOARD["/board CLI view"]
         HALT["/halt emergency stop"]
+    end
+
+    subgraph "Server Layer"
+        SRV["server.js (Express)"]
+        ORCHMAP["Orchestrators Map<br/>Map&lt;projectName, Orchestrator&gt;"]
+        ORCHFOR["orchFor(req)<br/>resolves project → orchestrator"]
+        CHATPROC["Chat Processes<br/>Map&lt;projectName, pty&gt;"]
     end
 
     subgraph "Agent Layer"
@@ -52,11 +61,15 @@ graph TB
     end
 
     subgraph "Data Layer (.agent-board/)"
-        BJ["board.json<br/>Tickets"]
-        SC["schema.json<br/>Rules"]
-        BB["blackboard.md<br/>Signals"]
-        HI["history/<br/>Audit trail"]
-        SP["sprints/current.json<br/>Sprint state"]
+        CFG["config.json<br/>Active project"]
+        SC["schema.json<br/>Rules (shared)"]
+        subgraph "projects/{name}/"
+            BJ["board.json<br/>Tickets"]
+            BB["blackboard.md<br/>Signals"]
+            CJ["chat.json<br/>Chat history"]
+            HI["history/<br/>Audit trail"]
+            SP["sprints/current.json"]
+        end
     end
 
     subgraph "Code Layer"
@@ -64,18 +77,26 @@ graph TB
         FEAT["feature branches<br/>feat/TICKET-XXX"]
     end
 
+    H --> DASH
+    H --> CHAT
     H --> BOARD
     H --> HALT
-    H -->|approves scope| BJ
-    H -->|resolves blockers| BB
+    DASH -->|REST + SSE| SRV
+    CHAT -->|REST + SSE| SRV
+    SRV --> ORCHMAP
+    SRV --> ORCHFOR
+    SRV --> CHATPROC
+    ORCHMAP -->|one per project| PM
+    ORCHMAP -->|one per project| DEV
+    ORCHMAP -->|one per project| REV
+    ORCHMAP -->|one per project| TEST
+    CHATPROC -->|claude -p| CHAT
 
     PM -->|creates/grooms tickets| BJ
     PM -->|posts findings| BB
     DEV -->|claims tickets, updates status| BJ
     DEV -->|creates branches, writes code| FEAT
-    DEV -->|posts signals| BB
     REV -->|reviews code, merges PRs| FEAT
-    REV -->|updates status| BJ
     REV -->|merges to main| MAIN
     TEST -->|validates on main| MAIN
     TEST -->|updates status, creates bugs| BJ
@@ -86,6 +107,7 @@ graph TB
     TEST -->|reads first| BB
 
     SC -.->|enforces| BJ
+    CFG -.->|selects active| ORCHFOR
 ```
 
 ### Data Flow
@@ -515,34 +537,38 @@ This is why we keep the human in sprint ceremonies even when agents are performi
 
 ### Why an Orchestrator?
 
-Without an orchestrator, you manually open 4 terminals, type `/pm`, `/dev`, `/reviewer`, `/test`, and watch them work. The orchestrator automates this: it watches `board.json`, detects when work is available for each agent role, and spawns Claude Code in headless mode to do the work.
+Without an orchestrator, you manually open 4 terminals, type `/pm`, `/dev`, `/reviewer`, `/test`, and watch them work. The orchestrator automates this: it watches `board.json`, detects when work is available for each agent role, and spawns Claude Code in headless mode to do the work. Each project gets its own `Orchestrator` instance — the server maintains a `Map<projectName, Orchestrator>` for full project isolation.
 
 ### How It Works
 
 ```mermaid
 sequenceDiagram
     participant D as Dashboard (browser)
-    participant O as Orchestrator (server.js)
-    participant F as .agent-board/ (files)
+    participant S as server.js
+    participant OF as orchFor(req)
+    participant O as Project Orchestrator
+    participant F as projects/{name}/ (files)
     participant C as Claude Code (headless)
 
-    D->>O: Click "Start Sprint"
+    D->>S: Click "Start Sprint"
+    S->>OF: Resolve project orchestrator
+    OF->>O: Return orchestrator
     O->>F: Update sprint status → active
-    D->>O: Click "Approve All"
+    D->>S: Click "Approve All"
     O->>F: Move tickets to dev-ready
     O->>O: File watcher detects board.json change
     O->>O: Auto-dispatch: dev-agent has work
-    O->>C: spawn claude -p (dev agent prompt)
+    O->>C: spawn claude -p (dev agent prompt) in git worktree
     C->>F: Read blackboard, claim ticket, create branch
     C->>F: Implement feature, push commits
     C->>F: Update board.json → review-ready
     C-->>O: Exit with CYCLE_RESULT: COMPLETED
     O->>O: File watcher: board.json changed
     O->>O: Auto-dispatch: reviewer-agent has work
-    O->>C: spawn claude -p (reviewer prompt)
+    O->>C: spawn claude -p (reviewer prompt) in git worktree
     C->>F: Review code, merge PR
     C->>F: Update board.json → test-ready
-    O->>D: SSE: ticket moved, agent status updated
+    O->>D: SSE: {event, project: "name"} (tagged)
 ```
 
 ### Claude Code Headless Mode
@@ -574,36 +600,39 @@ The dashboard (`http://localhost:3456`) provides:
 - **Agent safety** — moving an assigned ticket warns the human and stops the agent with confirmation
 - **Blackboard panel** — latest signals color-coded by type
 - **Agent log** — real-time feed of what agents are doing
-- **SSE real-time updates** — dashboard auto-refreshes via Server-Sent Events, no polling
+- **PM Chat** — conversational PM agent for spec design, ticket actions, and project creation
+- **Project switcher** — switch between projects; agents on other projects keep running
+- **SSE real-time updates** — dashboard auto-refreshes via Server-Sent Events with project-scoped filtering
 
 ### Human Override — Move Any Ticket
 
-The dashboard gives the human full override authority to move any ticket to any status. This is critical for course-correcting mid-sprint.
+The dashboard gives the human full override authority to move any ticket to any status. This is critical for course-correcting mid-sprint. All requests include a `project` parameter so the correct orchestrator is resolved.
 
 ```mermaid
 sequenceDiagram
     participant H as Human (Dashboard)
     participant S as Server (server.js)
-    participant O as Orchestrator
+    participant OF as orchFor(req)
+    participant O as Project Orchestrator
     participant A as Active Agent
     participant B as board.json
 
     H->>H: Click ticket → "Move to" dropdown → select status
     H->>H: Click "Move"
+    H->>S: POST /api/actions/move-ticket {ticketId, toStatus, project}
+    S->>OF: orchFor(req) → resolve project orchestrator
+    OF->>O: Return orchestrator for project
 
     alt Ticket has active agent
         H->>H: ⚠ Warning: "dev-agent is assigned"
         H->>H: Confirm dialog: "Stop agent and move?"
-        H->>S: POST /api/actions/move-ticket {ticketId, toStatus, stopAgent: true}
-        S->>O: stopAgent('dev-agent')
         O->>A: Kill process
-        S->>B: Update status + clear assignee + write history
+        O->>B: Update status + clear assignee + write history
     else No agent assigned
-        H->>S: POST /api/actions/move-ticket {ticketId, toStatus}
-        S->>B: Update status + write history
+        O->>B: Update status + write history
     end
 
-    S-->>H: SSE: state-update (board refreshes)
+    S-->>H: SSE: state-update {project: "...", ...}
 ```
 
 ### Sprint Reset Flow
@@ -647,6 +676,184 @@ Your project's own services (db, backend, frontend, etc.) may run in Docker or e
 
 ---
 
+## Per-Project Architecture
+
+SwarmBoard supports multiple independent projects, each with its own orchestrator, agents, board, and sprint state. The server maintains a `Map<projectName, Orchestrator>` and resolves the correct orchestrator for each request.
+
+### Orchestrator Resolution
+
+```mermaid
+graph LR
+    REQ["HTTP Request<br/>?project=MyProject"]
+    ORCHFOR["orchFor(req)"]
+    MAP["orchestrators Map"]
+
+    subgraph "Per-Project Orchestrators"
+        O1["Orchestrator<br/>MyProject<br/>PM · DEV · REV · QA"]
+        O2["Orchestrator<br/>Another-Project<br/>PM · DEV · REV · QA"]
+        O3["Orchestrator<br/>Third-Project<br/>PM · DEV · REV · QA"]
+    end
+
+    SSE["SSE Broadcast<br/>(all events tagged<br/>with project name)"]
+    DASH["Dashboard<br/>(filters by<br/>active project)"]
+
+    REQ --> ORCHFOR
+    ORCHFOR -->|"resolve or create"| MAP
+    MAP --> O1
+    MAP --> O2
+    MAP --> O3
+    O1 -->|"events + project tag"| SSE
+    O2 -->|"events + project tag"| SSE
+    O3 -->|"events + project tag"| SSE
+    SSE --> DASH
+```
+
+### Key design decisions
+
+- **Lazy creation** — orchestrators are created on first access via `getOrCreateOrchestrator()`, not at server startup
+- **Shared schema** — `schema.json` (state machine rules, WIP limits) lives at the `.agent-board/` root and is shared across all projects
+- **Independent lifecycle** — switching the active project in the dashboard doesn't stop agents on other projects
+- **SSE project tags** — all SSE events include a `project` field; the dashboard UI filters events to show only the active project
+
+### Cross-Project Rate Limiting
+
+```mermaid
+sequenceDiagram
+    participant A as Agent (Project A)
+    participant OA as Orchestrator A
+    participant MAP as orchestrators Map
+    participant OB as Orchestrator B
+    participant OC as Orchestrator C
+    participant D as Dashboard
+
+    A->>OA: Rate limit error detected in output
+    OA->>OA: Kill agent process
+    OA->>OA: Set rateLimitState.detected = true
+    OA->>MAP: Iterate all other orchestrators
+    MAP->>OB: stopAll() + set rateLimitState
+    MAP->>OC: stopAll() + set rateLimitState
+    OA->>D: SSE: rate-limit {project: "A", resetInfo: "..."}
+    Note over D: Dashboard shows rate limit banner
+    Note over OA,OC: All agents across all projects stopped
+    D->>MAP: POST /api/actions/clear-rate-limit
+    MAP->>OA: Clear rateLimitState
+    MAP->>OB: Clear rateLimitState
+    MAP->>OC: Clear rateLimitState
+```
+
+Rate limiting is account-level (Anthropic API), so when one agent hits a limit, all agents everywhere must stop to avoid burning retries.
+
+---
+
+## PM Chat System
+
+The Chat tab provides a conversational interface with a PM agent. Each project has its own chat process and history.
+
+### Chat Flow
+
+```mermaid
+sequenceDiagram
+    participant U as User (Chat Tab)
+    participant S as server.js
+    participant CP as claude -p (Chat PM)
+    participant CJ as chat.json
+    participant D as Dashboard (SSE)
+
+    U->>S: POST /api/chat/send {message, project}
+    S->>CJ: Append user message to history
+    S->>S: Build prompt (board context + history + message)
+    S->>CP: Spawn claude -p with prompt via node-pty
+
+    loop Streaming response
+        CP->>S: Raw output chunks
+        S->>S: Strip ANSI, buffer text
+        S->>D: SSE: chat-response {chunk, done: false}
+        D->>U: Render streaming text
+    end
+
+    CP->>S: Process exits
+    S->>S: Parse final response for spec blocks and ACTION lines
+    S->>CJ: Append assistant message to history
+
+    alt Response contains ```spec block
+        S->>D: SSE: chat-response {done: true, hasSpec: true, spec: "..."}
+        D->>U: Show "Save as Project" button
+    else Response contains ACTION lines
+        D->>U: Render ACTION cards with Confirm/Dismiss buttons
+    end
+
+    opt User confirms an ACTION
+        U->>S: POST /api/chat/action {action}
+        S->>S: Execute action (move-ticket or create-ticket)
+        S->>D: SSE: state-update
+    end
+
+    opt User saves spec as project
+        U->>S: POST /api/chat/save-spec {spec, projectName}
+        S->>S: Scaffold new project directory
+        S->>S: Write SPEC.md
+        S->>S: Switch active project
+        S->>D: SSE: project-switch {name}
+    end
+```
+
+### Chat prompt construction
+
+The PM chat prompt includes:
+1. Role instructions (PM agent responsibilities)
+2. Current board state (ticket summary)
+3. Existing spec content (if any)
+4. Chat history (previous messages)
+5. The new user message
+6. Instructions for ACTION output format and spec block format
+
+---
+
+## Multi-Project Data Flow
+
+### Project Data Layout
+
+```mermaid
+graph TD
+    subgraph ".agent-board/"
+        CONFIG["config.json<br/>{activeProject: 'MyProject'}"]
+        SCHEMA["schema.json<br/>(shared state machine rules)"]
+
+        subgraph "projects/"
+            subgraph "MyProject/"
+                B1["board.json"]
+                BB1["blackboard.md"]
+                C1["chat.json"]
+                S1["SPEC.md"]
+                H1["history/"]
+                L1["logs/"]
+                SP1["sprints/current.json"]
+            end
+            subgraph "Another-Project/"
+                B2["board.json"]
+                BB2["blackboard.md"]
+                C2["chat.json"]
+                H2["history/"]
+                L2["logs/"]
+                SP2["sprints/current.json"]
+            end
+        end
+    end
+
+    CONFIG -.->|selects| B1
+    SCHEMA -.->|enforces| B1
+    SCHEMA -.->|enforces| B2
+```
+
+### Project lifecycle
+
+1. **Creation** — `POST /api/projects/create` or "Save as Project" from PM Chat scaffolds the directory structure
+2. **Migration** — on first run, existing single-project data is auto-migrated into `projects/{name}/`
+3. **Switching** — `POST /api/projects/switch` updates `config.json` and re-points the file watcher
+4. **Isolation** — each project has completely independent agents, board state, and sprint lifecycle
+
+---
+
 ## Comparison with Kapi Sprints
 
 | Aspect | Kapi Sprints | SwarmBoard |
@@ -659,6 +866,8 @@ Your project's own services (db, backend, frontend, etc.) may run in Docker or e
 | **Human control** | Edit markdown files | 6 interrupt levels + /halt + /board CLI |
 | **Sprint ceremonies** | Mentioned in skills | /review and /retro commands |
 | **Earned autonomy** | Conceptual (review rate decay) | Defined in schema.json with timeline |
+| **Multi-project** | Single project | Per-project orchestrators, isolated boards, project switching |
+| **Chat** | Not built in | PM Chat with spec generation, ACTION cards, project creation |
 | **Dashboard** | Next.js web app (read-only) | Web dashboard (Express + SSE) with full human control |
 
 ### Design Influences from Kapi
@@ -666,7 +875,7 @@ Your project's own services (db, backend, frontend, etc.) may run in Docker or e
 SwarmBoard builds on ideas from the Kapi Sprints framework:
 
 - **Kept:** Signal taxonomy (finding, decision, blocker, stuck, handoff, available), blackboard-first agent loop, earned autonomy concept (Sheridan's levels), HITL philosophy (Bainbridge's Irony)
-- **Added:** Structured ticket state machine, schema enforcement, code review pipeline (reviewer agent), branch-per-ticket workflow, 6-level human interrupt system, executable sprint ceremonies, web dashboard with full override authority
+- **Added:** Structured ticket state machine, schema enforcement, code review pipeline (reviewer agent), branch-per-ticket workflow, 6-level human interrupt system, executable sprint ceremonies, web dashboard with full override authority, per-project orchestrator isolation, PM Chat with ACTION cards, multi-project support
 
 ---
 
@@ -684,5 +893,7 @@ SwarmBoard builds on ideas from the Kapi Sprints framework:
 | **Sprint scope too large** | Nothing reaches done | Retro analyzes velocity and proposes smaller scope for next sprint |
 | **Human moves ticket with active agent** | Agent and board desync | Dashboard warns, confirms, and stops agent before moving ticket |
 | **Sprint needs full reset** | Stuck in bad state | Reset Sprint button: stops agents, reverts all active tickets → groomed, returns to planning |
+| **Rate limit hits one project** | All agents burning retries | Cross-project rate limiting: all orchestrators stop, dashboard shows rate limit banner |
+| **Chat ACTION executed incorrectly** | Wrong ticket moved/created | ACTION cards require explicit user confirmation before execution |
 
 > **Core principle:** No failure should be silent. Every state change is logged to history. Every cross-cutting issue goes to the blackboard. The human sees everything in `/board` and sprint ceremonies.

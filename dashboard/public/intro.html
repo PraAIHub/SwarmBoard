@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Agent Board Dashboard — Demo Deck</title>
+<title>SwarmBoard — Multi-Agent Sprint Board</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
@@ -382,7 +382,7 @@
   <h1>Multi-Agent<br><span class="accent">Sprint Board</span></h1>
   <p class="subtitle">AI agents coordinating through a shared ticket board,<br>with full human oversight and control.</p>
   <hr>
-  <p style="font-size: 15px; color: #374151; margin-top: 10px;">Dashboard Demo &mdash; Feb 2026</p>
+  <p style="font-size: 15px; color: #374151; margin-top: 10px;">Multi-Project &middot; PM Chat &middot; Per-Project Agents &mdash; Mar 2026</p>
 </div>
 
 <!-- ====== SLIDE 2: The Problem ====== -->
@@ -537,6 +537,10 @@
         <h4 class="purple">Human Control Tab</h4>
         <p>Approve tickets, create tickets, post signals, block, halt, and resume.</p>
       </div>
+      <div class="card" style="margin-top: 16px;">
+        <h4 class="cyan">Chat Tab</h4>
+        <p>Conversational PM agent &mdash; design specs, create tickets, manage projects through chat.</p>
+      </div>
     </div>
   </div>
   <div style="margin-top: 24px; display: flex; gap: 16px; flex-wrap: wrap; justify-content: center;">
@@ -544,13 +548,84 @@
     <span class="tag orange">Agent status bar</span>
     <span class="tag blue">Progress tracking</span>
     <span class="tag purple">Ticket modals</span>
+    <span class="tag cyan">PM Chat</span>
     <span class="tag red">Halt button</span>
   </div>
 </div>
 
-<!-- ====== SLIDE 7: Agent Status Bar ====== -->
+<!-- ====== SLIDE 7: Multi-Project ====== -->
 <div class="slide center" id="s7">
   <div class="slide-number">07</div>
+  <h3>Multi-Project Support</h3>
+  <h2>Independent <span class="accent">per-project agents</span> &mdash; full isolation</h2>
+  <div class="grid-2" style="margin-top: 30px;">
+    <div class="card">
+      <span class="icon">📁</span>
+      <h4 class="accent">Per-Project Isolation</h4>
+      <p>Each project gets its own Orchestrator, board, blackboard, sprint state, and agent logs. Switching projects doesn't stop agents on other projects.</p>
+    </div>
+    <div class="card">
+      <span class="icon">🗺</span>
+      <h4 class="green">Orchestrator Map</h4>
+      <p>Server maintains <code style="color:#22c55e">Map&lt;projectName, Orchestrator&gt;</code>. Each request resolves to the correct orchestrator via <code style="color:#22c55e">orchFor(req)</code>.</p>
+    </div>
+    <div class="card">
+      <span class="icon">⚡</span>
+      <h4 class="blue">Cross-Project Rate Limiting</h4>
+      <p>When any agent hits an API rate limit, ALL agents across ALL projects stop instantly. Account-level safety.</p>
+    </div>
+    <div class="card">
+      <span class="icon">🚀</span>
+      <h4 class="purple">Create &amp; Switch</h4>
+      <p>Create projects via dashboard header or PM Chat. Switch with the project dropdown &mdash; agents keep running independently.</p>
+    </div>
+  </div>
+  <div class="code-block" style="max-width: 500px; margin-top: 20px;">
+    <span class="flag">.agent-board/projects/</span><br>
+    ├── <span class="cmd">MyProject/</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment"># board, blackboard, chat, logs</span><br>
+    ├── <span class="cmd">API-Service/</span>&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment"># independent agents</span><br>
+    └── <span class="cmd">Mobile-App/</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment"># independent agents</span>
+  </div>
+</div>
+
+<!-- ====== SLIDE 8: PM Chat ====== -->
+<div class="slide center" id="s8">
+  <div class="slide-number">08</div>
+  <h3>PM Chat</h3>
+  <h2>Conversational <span class="accent">project planning</span> with ACTION cards</h2>
+  <div class="grid-2" style="margin-top: 30px;">
+    <div class="card">
+      <span class="icon">💬</span>
+      <h4 class="accent">Chat with PM Agent</h4>
+      <p>Describe your project idea. The PM generates a structured spec, suggests tickets, and helps refine requirements &mdash; all through natural conversation.</p>
+    </div>
+    <div class="card">
+      <span class="icon">🎯</span>
+      <h4 class="green">ACTION Cards</h4>
+      <p>The PM suggests board actions (move tickets, create tickets) as interactive cards. You confirm before they execute &mdash; human always in the loop.</p>
+    </div>
+    <div class="card">
+      <span class="icon">📝</span>
+      <h4 class="blue">Spec Generation</h4>
+      <p>Chat generates a full spec in a code block. One click to save it as a new project with scaffolded board, blackboard, and sprint files.</p>
+    </div>
+    <div class="card">
+      <span class="icon">🔄</span>
+      <h4 class="purple">Streaming Responses</h4>
+      <p>Responses stream in real-time via SSE. Per-project chat history persisted in <code style="color:#22c55e">chat.json</code>.</p>
+    </div>
+  </div>
+  <div style="margin-top: 24px; display: flex; gap: 16px; flex-wrap: wrap; justify-content: center;">
+    <span class="tag orange">claude -p powered</span>
+    <span class="tag green">SSE streaming</span>
+    <span class="tag blue">Spec detection</span>
+    <span class="tag purple">ACTION confirm/dismiss</span>
+  </div>
+</div>
+
+<!-- ====== SLIDE 9: Agent Status Bar ====== -->
+<div class="slide center" id="s9">
+  <div class="slide-number">09</div>
   <h3>Always-Visible Agent Bar</h3>
   <h2>See <span class="accent">what every agent is doing</span> at a glance</h2>
   <div class="grid-4" style="margin-top: 30px;">
@@ -587,9 +662,9 @@
   </ul>
 </div>
 
-<!-- ====== SLIDE 8: Human Controls ====== -->
-<div class="slide center" id="s8">
-  <div class="slide-number">08</div>
+<!-- ====== SLIDE 10: Human Controls ====== -->
+<div class="slide center" id="s10">
+  <div class="slide-number">10</div>
   <h3>Human Override</h3>
   <h2>You are <span class="red">always in charge</span></h2>
   <div class="grid-3" style="margin-top: 20px;">
@@ -629,9 +704,9 @@
   </div>
 </div>
 
-<!-- ====== SLIDE 9: Safety ====== -->
-<div class="slide center" id="s9">
-  <div class="slide-number">09</div>
+<!-- ====== SLIDE 11: Safety ====== -->
+<div class="slide center" id="s11">
+  <div class="slide-number">11</div>
   <h3>Safety &amp; Recovery</h3>
   <h2>Built-in <span class="accent">guardrails</span> at every step</h2>
   <div class="grid-2" style="margin-top: 30px;">
@@ -680,9 +755,9 @@
   </div>
 </div>
 
-<!-- ====== SLIDE 10: How to Run ====== -->
-<div class="slide center" id="s10">
-  <div class="slide-number">10</div>
+<!-- ====== SLIDE 12: How to Run ====== -->
+<div class="slide center" id="s12">
+  <div class="slide-number">12</div>
   <h3>Getting Started</h3>
   <h2>Two ways to <span class="accent">run the board</span></h2>
   <div class="grid-2" style="margin-top: 20px;">
@@ -718,19 +793,24 @@
   </div>
 </div>
 
-<!-- ====== SLIDE 11: Architecture ====== -->
-<div class="slide center" id="s11">
-  <div class="slide-number">11</div>
+<!-- ====== SLIDE 13: Architecture ====== -->
+<div class="slide center" id="s13">
+  <div class="slide-number">13</div>
   <h3>Under the Hood</h3>
   <h2><span class="accent">File-based</span> coordination, zero database</h2>
-  <div class="code-block" style="max-width: 600px; margin-top: 20px;">
+  <div class="code-block" style="max-width: 650px; margin-top: 20px;">
     <span class="flag">.agent-board/</span><br>
-    ├── <span class="cmd">board.json</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment"># Single source of truth</span><br>
-    ├── <span class="cmd">blackboard.md</span>&nbsp;&nbsp;&nbsp;<span class="comment"># Cross-agent signals</span><br>
-    ├── <span class="cmd">schema.json</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment"># State machine + rules</span><br>
-    ├── <span class="flag">history/</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment"># Append-only audit log</span><br>
-    └── <span class="flag">sprints/</span><br>
-    &nbsp;&nbsp;&nbsp;&nbsp;└── <span class="cmd">current.json</span>&nbsp;<span class="comment"># Active sprint def</span>
+    ├── <span class="cmd">config.json</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment"># Active project selection</span><br>
+    ├── <span class="cmd">schema.json</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment"># State machine + rules (shared)</span><br>
+    └── <span class="flag">projects/</span><br>
+    &nbsp;&nbsp;&nbsp;&nbsp;└── <span class="flag">{project}/</span><br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── <span class="cmd">board.json</span>&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment"># Ticket board</span><br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── <span class="cmd">blackboard.md</span><span class="comment"># Agent signals</span><br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── <span class="cmd">chat.json</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment"># PM Chat history</span><br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── <span class="flag">history/</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment"># Audit log</span><br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── <span class="flag">logs/</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment"># Agent output</span><br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└── <span class="flag">sprints/</span><br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└── <span class="cmd">current.json</span>
   </div>
   <div style="margin-top: 24px; display: flex; gap: 16px; flex-wrap: wrap; justify-content: center;">
     <span class="tag orange">Express.js server</span>
@@ -738,17 +818,18 @@
     <span class="tag blue">Chokidar file watch</span>
     <span class="tag purple">node-pty agents</span>
     <span class="tag cyan">Single HTML SPA</span>
+    <span class="tag red">Per-project orchestrators</span>
   </div>
 </div>
 
-<!-- ====== SLIDE 12: End ====== -->
-<div class="slide center" id="s12">
-  <div class="slide-number">12</div>
+<!-- ====== SLIDE 14: End ====== -->
+<div class="slide center" id="s14">
+  <div class="slide-number">14</div>
   <h3 style="color:#f59e0b; letter-spacing: 3px; text-transform: uppercase; font-size: 14px;">SwarmBoard</h3>
   <h1>Questions?</h1>
   <p class="subtitle">Try it: <code style="color:#22c55e">cd dashboard && node server.js</code></p>
   <hr>
-  <div style="margin-top: 20px; display: flex; gap: 20px;">
+  <div style="margin-top: 20px; display: flex; gap: 20px; flex-wrap: wrap; justify-content: center;">
     <span class="tag blue">/pm</span>
     <span class="tag orange">/dev</span>
     <span class="tag purple">/reviewer</span>
@@ -756,12 +837,14 @@
     <span class="tag green">/board</span>
     <span class="tag red">/halt</span>
   </div>
+  <p style="font-size: 14px; color: #4b5563; margin-top: 20px;">Multi-Project &middot; PM Chat &middot; Per-Project Agents &middot; Cross-Project Rate Limiting</p>
+  <p style="font-size: 13px; color: #374151; margin-top: 8px;">Inspired by <span style="color:#f59e0b;">Kapi Sprints</span> &mdash; Blackboard Pattern, Earned Autonomy, HITL Philosophy</p>
 </div>
 
 <!-- Navigation -->
 <div class="nav" id="nav">
   <div id="prev" class="nav-btn">&larr; Prev</div>
-  <div class="counter" id="counter">1 / 12</div>
+  <div class="counter" id="counter">1 / 14</div>
   <div id="next" class="nav-btn">&rarr; Next</div>
 </div>
 
