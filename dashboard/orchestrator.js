@@ -14,10 +14,11 @@ class Orchestrator {
 
     // Agent process management
     this.agents = {
-      'pm-agent':       { process: null, status: 'idle', current: null, label: 'PM',  pid: null },
-      'dev-agent':      { process: null, status: 'idle', current: null, label: 'DEV', pid: null },
-      'reviewer-agent': { process: null, status: 'idle', current: null, label: 'REV', pid: null },
-      'test-agent':     { process: null, status: 'idle', current: null, label: 'QA',  pid: null },
+      'pm-agent':        { process: null, status: 'idle', current: null, label: 'PM',   pid: null },
+      'architect-agent': { process: null, status: 'idle', current: null, label: 'ARCH', pid: null },
+      'dev-agent':       { process: null, status: 'idle', current: null, label: 'DEV',  pid: null },
+      'reviewer-agent':  { process: null, status: 'idle', current: null, label: 'REV',  pid: null },
+      'test-agent':      { process: null, status: 'idle', current: null, label: 'QA',   pid: null },
     };
 
     this.listeners = [];
@@ -27,6 +28,7 @@ class Orchestrator {
     // Per-agent output buffering (last 50 lines each)
     this.agentLogs = {
       'pm-agent': [],
+      'architect-agent': [],
       'dev-agent': [],
       'reviewer-agent': [],
       'test-agent': [],
@@ -128,19 +130,36 @@ class Orchestrator {
   getAgentWork() {
     const board = this.readBoard();
     const work = {
-      'pm-agent':       { available: [], resume: null, description: '' },
-      'dev-agent':      { available: [], resume: null, description: '' },
-      'reviewer-agent': { available: [], resume: null, description: '' },
-      'test-agent':     { available: [], resume: null, description: '' },
+      'pm-agent':        { available: [], resume: null, description: '' },
+      'architect-agent': { available: [], resume: null, description: '' },
+      'dev-agent':       { available: [], resume: null, description: '' },
+      'reviewer-agent':  { available: [], resume: null, description: '' },
+      'test-agent':      { available: [], resume: null, description: '' },
     };
 
     const tickets = board.tickets || [];
 
+    // Architect: validate design/spike tickets that are dev-ready
+    const archDesignReady = tickets.filter(t => t.status === 'dev-ready' && (t.type === 'design' || t.type === 'spike'));
+    const archInProgress = tickets.filter(t => t.status === 'in-dev' && t.assignee === 'architect-agent');
+    if (archInProgress.length > 0) {
+      work['architect-agent'].resume = archInProgress[0];
+      work['architect-agent'].available = archInProgress;
+      work['architect-agent'].description = `resuming ${archInProgress[0].id}`;
+    } else if (archDesignReady.length > 0) {
+      work['architect-agent'].available = archDesignReady;
+      work['architect-agent'].description = `${archDesignReady.length} design/spike tickets to validate`;
+    } else {
+      work['architect-agent'].available = [];
+      work['architect-agent'].description = 'no design tickets to validate';
+    }
+
     // Dev: check for in-progress work first (session recovery)
+    // Exclude design/spike tickets — those are for the architect
     const devInProgress = tickets.filter(t => t.status === 'in-dev' && t.assignee === 'dev-agent');
     const allInDev = tickets.filter(t => t.status === 'in-dev');
     const changesRequested = tickets.filter(t => t.status === 'changes-requested');
-    const devReady = tickets.filter(t => t.status === 'dev-ready');
+    const devReady = tickets.filter(t => t.status === 'dev-ready' && t.type !== 'design' && t.type !== 'spike');
     if (devInProgress.length > 0) {
       // Resume in-progress ticket — not blocked, this IS the work
       work['dev-agent'].resume = devInProgress[0];
@@ -212,10 +231,11 @@ class Orchestrator {
 
   getCommandContent(role) {
     const commandMap = {
-      'pm-agent':       'pm.md',
-      'dev-agent':      'dev.md',
-      'reviewer-agent': 'reviewer.md',
-      'test-agent':     'test.md',
+      'pm-agent':        'pm.md',
+      'architect-agent': 'architect.md',
+      'dev-agent':       'dev.md',
+      'reviewer-agent':  'reviewer.md',
+      'test-agent':      'test.md',
     };
     const cmdFile = path.join(this.projectRoot, '.claude', 'commands', commandMap[role]);
     try {
@@ -793,7 +813,7 @@ CRITICAL RESTRICTION: NEVER read, modify, create, or delete any files inside the
     if (!this.autoMode || this.isHalted() || this.rateLimitState.detected) return;
 
     const work = this.getAgentWork();
-    const priority = ['dev-agent', 'reviewer-agent', 'test-agent', 'pm-agent'];
+    const priority = ['dev-agent', 'reviewer-agent', 'test-agent', 'architect-agent', 'pm-agent'];
 
     for (const role of priority) {
       if (this.agents[role].status === 'stopped') continue;

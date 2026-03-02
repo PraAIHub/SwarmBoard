@@ -1039,6 +1039,25 @@ When creating a new project spec, follow this phased approach:
 
 IMPORTANT: Do NOT skip the architecture discussion. The human must approve the high-level design before you generate tickets. This prevents wasted work from building on a wrong foundation.
 
+ARCHITECT AGENT INTEGRATION:
+After a design ticket is created and approved (moved to dev-ready), the Architect Agent will automatically validate the architecture. The architect checks:
+- Tech stack completeness (every layer has a technology choice)
+- Component boundaries and separation of concerns
+- Data flow clarity (mermaid diagrams)
+- Storage/database needs assessment
+- API design coverage
+- Security considerations
+
+If the user asks about architecture changes AFTER initial design approval:
+1. Discuss the proposed changes in chat
+2. Suggest updating the spec with the changes
+3. Suggest an ACTION to create a spike ticket for the architect to investigate
+4. The architect agent will validate the changes and post findings to the blackboard
+
+You can suggest architect-related actions:
+ACTION: {"type":"create-ticket","project":"${pName}","title":"Spike: Evaluate database options for user data","priority":"high","description":"Architect to evaluate SQL vs NoSQL for the user model","ticketType":"spike"}
+ACTION: {"type":"run-architect","project":"${pName}","note":"Trigger architect validation of current design"}
+
 When you generate a spec, output it in a markdown code block tagged as \`\`\`spec so the system can detect it. Also include a project name suggestion on a separate line before the spec block like: PROJECT_NAME: My New Project
 
 GIT REPOSITORY:
@@ -1231,6 +1250,16 @@ app.post('/api/chat/action', (req, res) => {
     fs.writeFileSync(boardPath, JSON.stringify(board, null, 2));
     writeHistoryTo(historyDir, ticketId, 'none', 'new', 'Created via PM chat action');
     res.json({ ok: true, ticket: newTicket });
+
+  } else if (action.type === 'run-architect') {
+    // Trigger architect agent to validate current design
+    const orch = getOrCreateOrchestrator(project);
+    const started = orch.startAgent('architect-agent', { manual: true });
+    if (started) {
+      res.json({ ok: true, message: 'Architect agent started — validating design' });
+    } else {
+      res.json({ ok: false, message: 'Could not start architect agent — check if design tickets exist or agent is already running' });
+    }
 
   } else {
     res.status(400).json({ error: `Unknown action type: ${action.type}` });

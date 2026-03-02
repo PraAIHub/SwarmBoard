@@ -18,6 +18,7 @@
   },
   "agent_permissions": {
     "pm-agent":       { "can_create": true,  "transitions": ["new→groomed", "groomed→dev-ready"] },
+    "architect-agent": { "can_create": true,  "transitions": ["dev-ready→in-dev"], "note": "Only on design/spike tickets. Creates spike tickets." },
     "dev-agent":      { "can_create": false, "transitions": ["dev-ready→in-dev", "in-dev→review-ready", "in-dev→blocked", "blocked→in-dev", "changes-requested→in-dev"] },
     "reviewer-agent": { "can_create": false, "transitions": ["review-ready→in-review", "in-review→test-ready", "in-review→changes-requested"] },
     "test-agent":     { "can_create": true,  "transitions": ["test-ready→in-test", "in-test→done", "in-test→dev-ready"] },
