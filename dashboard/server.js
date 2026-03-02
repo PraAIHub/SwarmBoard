@@ -996,7 +996,21 @@ Brief description of what the project does and who it's for.
 | Deployment | Docker | ... |
 
 ## Architecture
-High-level architecture description, key components, data flow.
+High-level architecture description and key components.
+
+Include a mermaid diagram showing major components and data flow:
+\\\`\\\`\\\`mermaid
+graph TB
+  subgraph "Frontend"
+    UI[React App]
+  end
+  subgraph "Backend"
+    API[Express API]
+    DB[(PostgreSQL)]
+  end
+  UI -->|REST| API
+  API --> DB
+\\\`\\\`\\\`
 
 ## Features
 ### Feature 1: Title
@@ -1014,6 +1028,16 @@ Key endpoints (if API layer exists).
 ## Non-Functional Requirements
 Performance, security, scalability considerations.
 \`\`\`
+
+DESIGN-FIRST WORKFLOW:
+When creating a new project spec, follow this phased approach:
+1. **Discovery** — Ask about the project idea, goals, users, constraints
+2. **Technology Discussion** — Discuss and agree on tech stack with rationale
+3. **Architecture Design** — Present an architecture diagram (mermaid) showing components, layers, and data flow. Ask the human to approve the architecture BEFORE moving on.
+4. **Feature Definition** — Once architecture is approved, define features with acceptance criteria
+5. **Spec Generation** — Output the complete spec in a \`\`\`spec block
+
+IMPORTANT: Do NOT skip the architecture discussion. The human must approve the high-level design before you generate tickets. This prevents wasted work from building on a wrong foundation.
 
 When you generate a spec, output it in a markdown code block tagged as \`\`\`spec so the system can detect it. Also include a project name suggestion on a separate line before the spec block like: PROJECT_NAME: My New Project
 

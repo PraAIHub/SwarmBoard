@@ -1,6 +1,6 @@
 {
   "valid_statuses": ["new", "groomed", "dev-ready", "in-dev", "blocked", "review-ready", "in-review", "changes-requested", "test-ready", "in-test", "done", "halted"],
-  "valid_types": ["feature", "bug", "tech-debt", "spike"],
+  "valid_types": ["feature", "bug", "tech-debt", "spike", "design"],
   "valid_priorities": ["critical", "high", "medium", "low"],
   "valid_transitions": {
     "new":                ["groomed"],
