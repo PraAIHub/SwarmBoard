@@ -122,6 +122,7 @@ graph TB
 sequenceDiagram
     participant H as Human
     participant PM as PM Agent
+    participant ARCH as Architect Agent
     participant BB as blackboard.md
     participant BJ as board.json
     participant DEV as Dev Agent
@@ -130,10 +131,20 @@ sequenceDiagram
     participant GIT as Git (main)
 
     PM->>BB: Read signals (step 1 — always)
-    PM->>BJ: Create tickets (new)
-    PM->>BJ: Groom tickets (new → groomed)
-    PM->>H: Request sprint approval
+    PM->>BJ: Create design ticket (type: design, new)
+    PM->>BJ: Groom design ticket (new → groomed)
+    PM->>H: Request design approval
 
+    H->>BJ: Approve design ticket (groomed → dev-ready)
+
+    ARCH->>BB: Read signals (step 1)
+    ARCH->>BJ: Validate design ticket (dev-ready)
+    ARCH->>BB: Post findings + ADRs
+    ARCH->>BJ: Create spike tickets if gaps found
+
+    Note over PM: After architect validates design
+    PM->>BJ: Create implementation tickets (new)
+    PM->>BJ: Groom tickets (new → groomed)
     H->>BJ: Approve tickets (groomed → dev-ready)
 
     DEV->>BB: Read signals (step 1)
@@ -227,15 +238,19 @@ Once the design ticket is approved (moved to `dev-ready`), the **Architect Agent
 ### The Happy Path
 
 ```
-1. PM agent reads spec, creates TICKET-002 (status: new)
-2. PM agent adds acceptance criteria, test cases (status: groomed)
-3. Human reviews and approves (status: dev-ready) ← HUMAN GATE
-4. Dev agent claims it, creates branch feat/TICKET-002-magic-link (status: in-dev)
-5. Dev agent implements, pushes branch (status: review-ready)
-6. Reviewer agent reviews code on branch (status: in-review)
-7. Reviewer approves, merges to main (status: test-ready)
-8. Test agent validates against acceptance criteria (status: in-test)
-9. All tests pass (status: done) ✓
+1. PM agent reads spec, creates TICKET-001 design ticket (status: new, type: design)
+2. PM agent grooms design ticket with architecture diagram + tech stack (status: groomed)
+3. Human approves design ticket (status: dev-ready) ← HUMAN GATE
+4. Architect agent validates design — posts findings/ADRs to blackboard
+5. PM agent creates TICKET-002 implementation ticket (status: new)
+6. PM agent adds acceptance criteria, test cases (status: groomed)
+7. Human reviews and approves (status: dev-ready) ← HUMAN GATE
+8. Dev agent claims it, creates branch feat/TICKET-002-magic-link (status: in-dev)
+9. Dev agent implements, pushes branch (status: review-ready)
+10. Reviewer agent reviews code on branch (status: in-review)
+11. Reviewer approves, merges to main (status: test-ready)
+12. Test agent validates against acceptance criteria (status: in-test)
+13. All tests pass (status: done) ✓
 ```
 
 ### The Review Feedback Loop
@@ -549,7 +564,7 @@ This is why we keep the human in sprint ceremonies even when agents are performi
 
 ### Why an Orchestrator?
 
-Without an orchestrator, you manually open 4 terminals, type `/pm`, `/dev`, `/reviewer`, `/test`, and watch them work. The orchestrator automates this: it watches `board.json`, detects when work is available for each agent role, and spawns Claude Code in headless mode to do the work. Each project gets its own `Orchestrator` instance — the server maintains a `Map<projectName, Orchestrator>` for full project isolation.
+Without an orchestrator, you manually open 5 terminals, type `/pm`, `/architect`, `/dev`, `/reviewer`, `/test`, and watch them work. The orchestrator automates this: it watches `board.json`, detects when work is available for each agent role, and spawns Claude Code in headless mode to do the work. Each project gets its own `Orchestrator` instance — the server maintains a `Map<projectName, Orchestrator>` for full project isolation.
 
 ### Target Repository Support
 
@@ -610,7 +625,7 @@ Key flags:
 The dashboard (`http://localhost:3456`) provides:
 
 - **Swim-lane Kanban** — all 11 ticket states as columns, tickets as cards with priority colors
-- **Agent status** — live dots (green=running, yellow=has-work, gray=idle, red=error), Start/Stop buttons
+- **Agent status** — live dots for PM, ARCH, DEV, REV, QA (green=running, yellow=has-work, gray=idle, red=error), Start/Stop buttons
 - **Human controls** — Start Sprint, Reset Sprint, Approve All, Toggle Auto-Dispatch, Post Signal, Halt/Resume
 - **Ticket modals** — click any ticket → "Move to" dropdown with all valid statuses, approve, block
 - **Agent safety** — moving an assigned ticket warns the human and stops the agent with confirmation
@@ -705,9 +720,9 @@ graph LR
     MAP["orchestrators Map"]
 
     subgraph "Per-Project Orchestrators"
-        O1["Orchestrator<br/>MyProject<br/>PM · DEV · REV · QA"]
-        O2["Orchestrator<br/>Another-Project<br/>PM · DEV · REV · QA"]
-        O3["Orchestrator<br/>Third-Project<br/>PM · DEV · REV · QA"]
+        O1["Orchestrator<br/>MyProject<br/>PM · ARCH · DEV · REV · QA"]
+        O2["Orchestrator<br/>Another-Project<br/>PM · ARCH · DEV · REV · QA"]
+        O3["Orchestrator<br/>Third-Project<br/>PM · ARCH · DEV · REV · QA"]
     end
 
     SSE["SSE Broadcast<br/>(all events tagged<br/>with project name)"]
@@ -800,7 +815,7 @@ sequenceDiagram
 
     opt User confirms an ACTION
         U->>S: POST /api/chat/action {action}
-        S->>S: Execute action (move-ticket or create-ticket)
+        S->>S: Execute action (move-ticket, create-ticket, or run-architect)
         S->>D: SSE: state-update
     end
 
@@ -817,11 +832,13 @@ sequenceDiagram
 
 The PM chat prompt includes:
 1. Role instructions (PM agent responsibilities)
-2. Current board state (ticket summary)
-3. Existing spec content (if any)
-4. Chat history (previous messages)
-5. The new user message
-6. Instructions for ACTION output format and spec block format
+2. Technology & architecture discussion guidelines (design-first workflow)
+3. Architect agent integration (how to trigger architect validation, create spike tickets)
+4. Current board state (ticket summary)
+5. Existing spec content (if any)
+6. Chat history (previous messages)
+7. The new user message
+8. Instructions for ACTION output format (move-ticket, create-ticket, run-architect) and spec block format
 
 ---
 
@@ -892,7 +909,7 @@ graph TD
 SwarmBoard builds on ideas from the Kapi Sprints framework:
 
 - **Kept:** Signal taxonomy (finding, decision, blocker, stuck, handoff, available), blackboard-first agent loop, earned autonomy concept (Sheridan's levels), HITL philosophy (Bainbridge's Irony)
-- **Added:** Structured ticket state machine, schema enforcement, code review pipeline (reviewer agent), branch-per-ticket workflow, 6-level human interrupt system, executable sprint ceremonies, web dashboard with full override authority, per-project orchestrator isolation, PM Chat with ACTION cards, multi-project support
+- **Added:** Structured ticket state machine, schema enforcement, architect agent (design validation, ADRs, spike tickets), code review pipeline (reviewer agent), branch-per-ticket workflow, 6-level human interrupt system, executable sprint ceremonies, web dashboard with full override authority, per-project orchestrator isolation, PM Chat with ACTION cards, multi-project support
 
 ---
 
