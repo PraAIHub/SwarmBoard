@@ -120,17 +120,24 @@ SwarmBoard supports multiple independent projects, each with its own agents, boa
 
 The Chat tab provides a conversational interface with a PM agent powered by Claude:
 
+- **Design-first workflow** — the PM creates a design/architecture ticket (type "design") with a mermaid architecture diagram and tech stack before creating implementation tickets. Human must approve the design before backlog stories are generated.
+- **Tech stack discussion** — the PM proactively discusses technology choices, presents options with rationale, and asks the user to confirm. The spec template includes a Technology Stack table, Architecture section with mermaid diagram, Data Model, and API Design.
 - **Spec generation** — describe your project idea and the PM generates a structured spec
 - **Board actions** — the PM can suggest ticket moves and creation as ACTION cards that you confirm before execution
 - **Project creation** — generate a spec from chat, then save it as a new project with one click
 - **Project-scoped** — each project has its own chat history
+
+## Target Repository
+
+Projects can have a separate git repository for code artifacts, configured in `board.json` as `"repo": {url, branch, cloned}`. The orchestrator clones the target repo on first agent run and creates worktrees from the clone. The `.agent-board/` directory is symlinked into each worktree for shared board state. Authentication uses the host machine's git credentials.
 
 ## Using with Your Project
 
 1. Clone or copy SwarmBoard into your project (or use it as a sibling directory)
 2. Start the dashboard: `cd dashboard && npm install && node server.js`
 3. Create a project via the dashboard or PM Chat, and provide your spec
-4. Start the sprint and let the agents build
+4. (Optional) Configure a target repo in `board.json` if code should live in a separate repository
+5. Start the sprint and let the agents build
 
 SwarmBoard is framework-agnostic — it works with any language, stack, or project type. The agents read your spec and adapt.
 

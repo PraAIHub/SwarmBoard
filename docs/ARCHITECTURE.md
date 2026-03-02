@@ -212,6 +212,10 @@ Agents are instructed to read the schema and only execute transitions they're pe
 
 ## Ticket Lifecycle — Detailed Walkthrough
 
+### Design-First Workflow
+
+Before creating implementation tickets, the PM agent creates a design/architecture ticket (TICKET-001, type "design") containing a mermaid architecture diagram and tech stack as acceptance criteria. The human must approve this design ticket before the PM creates backlog stories. The "design" type is a valid ticket type in `schema.json`.
+
 ### The Happy Path
 
 ```
@@ -538,6 +542,10 @@ This is why we keep the human in sprint ceremonies even when agents are performi
 ### Why an Orchestrator?
 
 Without an orchestrator, you manually open 4 terminals, type `/pm`, `/dev`, `/reviewer`, `/test`, and watch them work. The orchestrator automates this: it watches `board.json`, detects when work is available for each agent role, and spawns Claude Code in headless mode to do the work. Each project gets its own `Orchestrator` instance — the server maintains a `Map<projectName, Orchestrator>` for full project isolation.
+
+### Target Repository Support
+
+Projects can configure a separate git repository for code artifacts via `"repo": {url, branch, cloned}` in `board.json`. When configured, the orchestrator clones the target repo on first agent run and creates worktrees from the clone. The `.agent-board/` directory is symlinked into each worktree so agents share board state. Authentication uses the host machine's git credentials.
 
 ### How It Works
 

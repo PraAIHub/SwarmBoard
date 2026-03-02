@@ -90,7 +90,7 @@ The dashboard still works as a monitor in this mode — it watches `.agent-board
 
 ## Multi-Project Support
 
-Each project is fully isolated with its own board, blackboard, sprint state, agent logs, and chat history. The server maintains a `Map<projectName, Orchestrator>` — orchestrators are created lazily on first access.
+Each project is fully isolated with its own board, blackboard, sprint state, agent logs, and chat history. The server maintains a `Map<projectName, Orchestrator>` — orchestrators are created lazily on first access. Projects can optionally configure a target git repository (`"repo"` in `board.json`) for code artifacts. The orchestrator clones the repo on first agent run and creates worktrees from the clone, with `.agent-board/` symlinked for shared board state. Auth uses the host machine's git credentials.
 
 ### Key behaviors
 
@@ -125,6 +125,8 @@ The Chat tab provides a conversational interface with a PM agent. Each message s
 
 ### Features
 
+- **Design-first workflow** — the PM creates a design/architecture ticket (type "design") with a mermaid architecture diagram and tech stack as acceptance criteria before creating implementation tickets. Human must approve the design before backlog stories are generated.
+- **Tech stack discussion** — the PM proactively discusses technology choices, presents options with rationale, and asks the user to confirm. The spec template includes a Technology Stack table, Architecture section with mermaid diagram, Data Model, and API Design.
 - **Spec generation** — describe your idea; the PM generates a structured spec in a ` ```spec ` code block
 - **Board actions** — the PM can suggest ticket operations as `ACTION:` lines that render as confirmation cards in the UI. The user must confirm before execution.
 - **Project creation** — when a spec is generated, the UI offers a "Save as new project" button
@@ -276,6 +278,8 @@ All action endpoints accept `?project=` query parameter or `"project"` in the re
 | GET | `/api/projects` | List all projects with agent counts, display names, active status |
 | POST | `/api/projects/switch` | Switch active project `{name}` — does NOT stop agents on other projects |
 | POST | `/api/projects/create` | Create new project `{name, spec?, specContent?}` — scaffolds board, blackboard, sprint |
+| GET | `/api/projects/repo` | Get target repo configuration for the active project |
+| POST | `/api/projects/repo` | Set target repo configuration `{url, branch?}` — orchestrator clones on first agent run |
 
 ### PM Chat
 
