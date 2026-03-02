@@ -127,17 +127,25 @@ function initActiveProject() {
   }
 }
 
-function scaffoldProject(name, spec, displayName) {
+function scaffoldProject(name, spec, displayName, repoConfig) {
   const dir = path.join(PROJECTS_DIR, name);
   fs.mkdirSync(path.join(dir, 'sprints'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'history'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'logs'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'board.json'), JSON.stringify({
+  const boardData = {
     project: displayName || name,
     spec: spec || 'SPEC.md',
     tickets: [],
-    nextId: 1
-  }, null, 2));
+    nextId: 1,
+  };
+  if (repoConfig && repoConfig.url) {
+    boardData.repo = {
+      url: repoConfig.url,
+      branch: repoConfig.branch || 'main',
+      cloned: false,
+    };
+  }
+  fs.writeFileSync(path.join(dir, 'board.json'), JSON.stringify(boardData, null, 2));
   fs.writeFileSync(path.join(dir, 'blackboard.md'), `# Blackboard — ${name}\n\nCross-cutting signals, findings, and decisions.\n`);
   fs.writeFileSync(path.join(dir, 'sprints', 'current.json'), JSON.stringify({
     sprint: 1,
@@ -843,14 +851,15 @@ app.post('/api/projects/switch', (req, res) => {
 
 // Create a new project
 app.post('/api/projects/create', (req, res) => {
-  const { name, spec, specContent } = req.body;
+  const { name, spec, specContent, repoUrl, repoBranch } = req.body;
   if (!name) return res.status(400).json({ error: 'Project name is required' });
   if (!/^[a-zA-Z0-9 _-]+$/.test(name)) return res.status(400).json({ error: 'Project name must be alphanumeric (spaces, dashes, underscores allowed)' });
   const slug = name.replace(/\s+/g, '-');
   const projectDir = path.join(PROJECTS_DIR, slug);
   if (fs.existsSync(projectDir)) return res.status(409).json({ error: `Project "${name}" already exists` });
 
-  scaffoldProject(slug, spec, name);
+  const repoConfig = repoUrl ? { url: repoUrl.trim(), branch: (repoBranch || 'main').trim() } : null;
+  scaffoldProject(slug, spec, name, repoConfig);
 
   // If spec content was pasted or uploaded, save it as SPEC.md in the project folder
   if (specContent) {
@@ -859,6 +868,32 @@ app.post('/api/projects/create', (req, res) => {
   }
 
   res.json({ ok: true, name: slug });
+});
+
+// Set or update repo config for a project
+app.post('/api/projects/repo', (req, res) => {
+  const { repoUrl, repoBranch } = req.body;
+  const orch = orchFor(req);
+  if (!repoUrl) return res.status(400).json({ error: 'repoUrl is required' });
+
+  const board = orch.readBoard();
+  board.repo = {
+    url: repoUrl.trim(),
+    branch: (repoBranch || 'main').trim(),
+    cloned: false,
+  };
+  board.last_updated = new Date().toISOString();
+  fs.writeFileSync(orch.boardPath, JSON.stringify(board, null, 2));
+
+  orch.addLog('info', `Repo configured: ${repoUrl}`);
+  res.json({ ok: true, repo: board.repo });
+});
+
+// Get repo config for a project
+app.get('/api/projects/repo', (req, res) => {
+  const orch = orchFor(req);
+  const board = orch.readBoard();
+  res.json({ repo: board.repo || null, project: orch.projectName });
 });
 
 // ── PM Chat ─────────────────────────────────────────────────────────────────
@@ -934,7 +969,61 @@ Your responsibilities:
 - Keep responses concise and focused
 - Use markdown formatting in your responses
 
+TECHNOLOGY & ARCHITECTURE DISCUSSION:
+When helping design a new project or refine a spec, you MUST proactively discuss technology choices:
+- Ask what kind of application (web app, API, CLI, mobile, full-stack, etc.)
+- Discuss which layers are needed (UI, API, service, database) — not all projects need all
+- For each layer, recommend a tech stack with rationale (e.g., "React for UI because..." or "FastAPI for backend because...")
+- Present 2-3 options when there are genuine trade-offs, with pros/cons
+- Ask the user to confirm or override your recommendations
+- If the user has preferences (e.g., "I want to use Go"), respect them and adapt the architecture
+- Document ALL technology decisions in the spec under a "## Technology Stack" section
+
+SPEC STRUCTURE:
+When generating a spec, follow this structure:
+\`\`\`
+# Project Name
+
+## Overview
+Brief description of what the project does and who it's for.
+
+## Technology Stack
+| Layer | Technology | Rationale |
+|-------|-----------|-----------|
+| Frontend | React + TypeScript | ... |
+| Backend | Node.js + Express | ... |
+| Database | PostgreSQL | ... |
+| Deployment | Docker | ... |
+
+## Architecture
+High-level architecture description, key components, data flow.
+
+## Features
+### Feature 1: Title
+Description and acceptance criteria.
+
+### Feature 2: Title
+Description and acceptance criteria.
+
+## Data Model
+Key entities and relationships (if database is needed).
+
+## API Design
+Key endpoints (if API layer exists).
+
+## Non-Functional Requirements
+Performance, security, scalability considerations.
+\`\`\`
+
 When you generate a spec, output it in a markdown code block tagged as \`\`\`spec so the system can detect it. Also include a project name suggestion on a separate line before the spec block like: PROJECT_NAME: My New Project
+
+GIT REPOSITORY:
+If the user wants agents to push code to their own repository, ask for:
+- Git repo URL (HTTPS or SSH, e.g., https://github.com/user/repo.git)
+- Default branch name (usually "main")
+The system will handle authentication separately. Include the repo URL in the spec if provided:
+REPO_URL: https://github.com/user/repo.git
+REPO_BRANCH: main
 
 BOARD ACTIONS:
 You can suggest board actions that the user can confirm. Output them on their own line in this exact format:
@@ -1126,8 +1215,23 @@ app.post('/api/chat/action', (req, res) => {
 
 // Save spec from chat — optionally creates a new project
 app.post('/api/chat/save-spec', (req, res) => {
-  const { spec, projectName: newProjectName } = req.body;
+  const { spec, projectName: newProjectName, repoUrl, repoBranch } = req.body;
   if (!spec) return res.status(400).json({ error: 'Spec content is required' });
+
+  // Parse REPO_URL and REPO_BRANCH from spec text (PM chat may embed them)
+  let detectedRepoUrl = repoUrl || null;
+  let detectedRepoBranch = repoBranch || null;
+  const repoUrlMatch = spec.match(/^REPO_URL:\s*(.+)$/m);
+  const repoBranchMatch = spec.match(/^REPO_BRANCH:\s*(.+)$/m);
+  if (repoUrlMatch && !detectedRepoUrl) detectedRepoUrl = repoUrlMatch[1].trim();
+  if (repoBranchMatch && !detectedRepoBranch) detectedRepoBranch = repoBranchMatch[1].trim();
+
+  // Clean REPO_URL/REPO_BRANCH lines from the spec content before saving
+  let cleanSpec = spec
+    .replace(/^REPO_URL:\s*.+$/m, '')
+    .replace(/^REPO_BRANCH:\s*.+$/m, '')
+    .replace(/^\n{3,}/gm, '\n\n')
+    .trim();
 
   let targetDir = ctx.projectDir;
 
@@ -1136,8 +1240,9 @@ app.post('/api/chat/save-spec', (req, res) => {
     if (!/^[a-zA-Z0-9 _-]+$/.test(name)) return res.status(400).json({ error: 'Invalid project name' });
     const slug = name.replace(/\s+/g, '-');
     const projectDir = path.join(PROJECTS_DIR, slug);
+    const repoConfig = detectedRepoUrl ? { url: detectedRepoUrl, branch: detectedRepoBranch || 'main' } : null;
     if (!fs.existsSync(projectDir)) {
-      scaffoldProject(slug, 'SPEC.md', name);
+      scaffoldProject(slug, 'SPEC.md', name, repoConfig);
     }
     targetDir = projectDir;
 
@@ -1149,15 +1254,23 @@ app.post('/api/chat/save-spec', (req, res) => {
   }
 
   const specPath = path.join(targetDir, 'SPEC.md');
-  fs.writeFileSync(specPath, spec);
+  fs.writeFileSync(specPath, cleanSpec);
 
   const board = readJSON(path.join(targetDir, 'board.json'));
   if (board) {
     board.spec = 'SPEC.md';
+    // Update repo config if detected from spec or passed explicitly
+    if (detectedRepoUrl) {
+      board.repo = {
+        url: detectedRepoUrl,
+        branch: detectedRepoBranch || board.repo?.branch || 'main',
+        cloned: board.repo?.cloned || false,
+      };
+    }
     fs.writeFileSync(path.join(targetDir, 'board.json'), JSON.stringify(board, null, 2));
   }
 
-  res.json({ ok: true, project: ctx.projectName });
+  res.json({ ok: true, project: ctx.projectName, repo: detectedRepoUrl || null });
 });
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

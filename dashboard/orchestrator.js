@@ -255,9 +255,20 @@ CRITICAL: You are running in a git worktree that starts from main (HEAD). Create
     const board = this.readBoard();
     const projectName = board.project || 'SwarmBoard';
     const specPath = board.spec || 'SPEC.md';
+    const repo = board.repo || null;
+
+    let repoContext = '';
+    if (repo && repo.url) {
+      repoContext = `
+TARGET REPOSITORY: ${repo.url} (branch: ${repo.branch || 'main'})
+You are working in a clone of the target repository, NOT the SwarmBoard repo.
+All code artifacts (source code, tests, configs) go into this repo.
+Board artifacts (.agent-board/) are symlinked — do NOT modify them directly in the worktree.
+Push your feature branches to this repo's remote origin.`;
+    }
 
     return `You are operating as ${role} in the ${projectName} project.
-Spec location: ${specPath}
+Spec location: ${specPath}${repoContext}
 
 Follow these instructions exactly:
 
@@ -329,10 +340,91 @@ CRITICAL RESTRICTION: NEVER read, modify, create, or delete any files inside the
     }
   }
 
+  // --- Target Repo Management ---
+
+  getRepoConfig() {
+    const board = this.readBoard();
+    return board.repo || null;
+  }
+
+  /**
+   * Get the git root directory for worktrees. If the project has a configured
+   * external repo, use the cloned repo. Otherwise use the SwarmBoard project root.
+   */
+  getGitRoot() {
+    const repo = this.getRepoConfig();
+    if (repo && repo.url) {
+      return path.join(this.projectDir, 'repo');
+    }
+    return this.projectRoot;
+  }
+
+  /**
+   * Ensure the target repo is cloned. Called before creating worktrees.
+   * Returns the repo directory path, or null if clone failed.
+   */
+  ensureRepoCloned() {
+    const repo = this.getRepoConfig();
+    if (!repo || !repo.url) return this.projectRoot; // no external repo configured
+
+    const repoDir = path.join(this.projectDir, 'repo');
+    if (fs.existsSync(path.join(repoDir, '.git'))) {
+      // Repo already cloned — pull latest
+      try {
+        execSync(`git pull --ff-only`, { cwd: repoDir, stdio: 'pipe', timeout: 30000 });
+        this.addLog('info', `Pulled latest from ${repo.url}`);
+      } catch (e) {
+        this.addLog('warn', `Could not pull latest: ${e.message}`);
+      }
+      return repoDir;
+    }
+
+    // Clone the repo
+    try {
+      this.addLog('info', `Cloning repo: ${repo.url} → ${repoDir}`);
+      execSync(`git clone "${repo.url}" "${repoDir}"`, {
+        cwd: this.projectDir,
+        stdio: 'pipe',
+        timeout: 120000,
+      });
+
+      // Checkout the configured branch if not default
+      if (repo.branch && repo.branch !== 'main') {
+        try {
+          execSync(`git checkout "${repo.branch}"`, { cwd: repoDir, stdio: 'pipe' });
+        } catch (e) {
+          // Branch may not exist yet — create it
+          execSync(`git checkout -b "${repo.branch}"`, { cwd: repoDir, stdio: 'pipe' });
+        }
+      }
+
+      // Mark as cloned in board.json
+      const board = this.readBoard();
+      if (board.repo) {
+        board.repo.cloned = true;
+        board.repo.clonedAt = new Date().toISOString();
+        board.last_updated = new Date().toISOString();
+        fs.writeFileSync(this.boardPath, JSON.stringify(board, null, 2));
+      }
+
+      this.addLog('info', `Repo cloned successfully: ${repo.url}`);
+      return repoDir;
+    } catch (err) {
+      this.addLog('error', `Failed to clone repo ${repo.url}: ${err.message}`);
+      return null;
+    }
+  }
+
   // --- Git Worktree Isolation ---
 
   createWorktree(role, runId) {
-    const worktreeDir = path.join(this.projectRoot, '.claude', 'worktrees');
+    const repo = this.getRepoConfig();
+    const gitRoot = repo && repo.url ? this.ensureRepoCloned() : this.projectRoot;
+    if (!gitRoot) return null; // clone failed
+
+    const worktreeDir = path.join(gitRoot === this.projectRoot
+      ? path.join(this.projectRoot, '.claude', 'worktrees')
+      : path.join(this.projectDir, 'worktrees'));
     fs.mkdirSync(worktreeDir, { recursive: true });
 
     const wtName = `${role}-${runId}`;
@@ -341,12 +433,11 @@ CRITICAL RESTRICTION: NEVER read, modify, create, or delete any files inside the
 
     try {
       execSync(`git worktree add "${wtPath}" -b "${branchName}" HEAD`, {
-        cwd: this.projectRoot,
+        cwd: gitRoot,
         stdio: 'pipe',
       });
 
-      // Replace .agent-board/ in worktree with symlink to main project's copy.
-      // This ensures agents and orchestrator share the same board state.
+      // Symlink .agent-board/ into worktree so agents share board state
       const wtBoard = path.join(wtPath, '.agent-board');
       const mainBoard = path.join(this.projectRoot, '.agent-board');
       try {
@@ -356,7 +447,7 @@ CRITICAL RESTRICTION: NEVER read, modify, create, or delete any files inside the
         this.addLog('warn', `Could not symlink .agent-board in worktree: ${e.message}`);
       }
 
-      this.addLog('info', `Created worktree for ${role}: ${wtPath}`);
+      this.addLog('info', `Created worktree for ${role}: ${wtPath} (repo: ${repo ? repo.url : 'swarmboard'})`);
       return wtPath;
     } catch (err) {
       this.addLog('error', `Failed to create worktree for ${role}: ${err.message}`);
@@ -366,15 +457,19 @@ CRITICAL RESTRICTION: NEVER read, modify, create, or delete any files inside the
 
   removeWorktree(role, wtPath) {
     if (!wtPath) return;
+    const repo = this.getRepoConfig();
+    const gitRoot = repo && repo.url
+      ? path.join(this.projectDir, 'repo')
+      : this.projectRoot;
+
     try {
       // Get the branch name before removing
       const branchName = execSync(`git -C "${wtPath}" rev-parse --abbrev-ref HEAD`, {
-        cwd: this.projectRoot,
         stdio: 'pipe',
       }).toString().trim();
 
       execSync(`git worktree remove "${wtPath}" --force`, {
-        cwd: this.projectRoot,
+        cwd: gitRoot,
         stdio: 'pipe',
       });
 
@@ -382,7 +477,7 @@ CRITICAL RESTRICTION: NEVER read, modify, create, or delete any files inside the
       if (branchName.startsWith('worktree-')) {
         try {
           execSync(`git branch -D "${branchName}"`, {
-            cwd: this.projectRoot,
+            cwd: gitRoot,
             stdio: 'pipe',
           });
         } catch (e) { /* branch may already be gone */ }

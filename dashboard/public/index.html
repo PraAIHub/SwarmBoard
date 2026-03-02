@@ -546,7 +546,13 @@ function render() {
 
 function renderHeader() {
   const sprint = STATE.sprint;
-  document.getElementById('project-meta').textContent = sprint ? `Sprint ${sprint.sprint} · ${sprint.goal?.substring(0, 80)}...` : '';
+  const repo = STATE.board?.repo;
+  let meta = sprint ? `Sprint ${sprint.sprint} · ${sprint.goal?.substring(0, 80) || ''}` : '';
+  if (repo && repo.url) {
+    const short = repo.url.replace(/^https?:\/\/(github\.com|gitlab\.com)\//, '').replace(/\.git$/, '');
+    meta += (meta ? ' · ' : '') + `📦 ${short}` + (repo.cloned ? '' : ' (not cloned)');
+  }
+  document.getElementById('project-meta').textContent = meta;
 }
 
 function renderSprintAction() {
@@ -1014,6 +1020,32 @@ function renderControl() {
         </div>
       </div>
 
+      <div class="panel" style="margin-bottom:12px">
+        <div class="panel-title">📦 TARGET REPOSITORY</div>
+        ${STATE.board?.repo?.url ? `
+          <div style="padding:8px 0;font-size:12px;">
+            <div style="font-weight:500;color:var(--text)">${STATE.board.repo.url}</div>
+            <div style="font-size:10px;color:var(--text-dim);margin-top:4px;">Branch: ${STATE.board.repo.branch || 'main'} · ${STATE.board.repo.cloned ? '<span style="color:var(--done)">Cloned</span>' : '<span style="color:var(--high)">Not cloned yet</span> (will clone on first agent run)'}</div>
+          </div>
+          <button class="action-btn" onclick="showRepoConfigModal()">
+            <span class="action-btn-icon">✏️</span>
+            <div>
+              <div class="action-btn-label">Update Repo</div>
+              <div class="action-btn-desc">Change the target repository URL or branch</div>
+            </div>
+          </button>
+        ` : `
+          <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px">No target repository configured. Agents will work in the SwarmBoard repo.</p>
+          <button class="action-btn" onclick="showRepoConfigModal()">
+            <span class="action-btn-icon">🔗</span>
+            <div>
+              <div class="action-btn-label">Configure Repository</div>
+              <div class="action-btn-desc">Set a git repo URL for project code artifacts</div>
+            </div>
+          </button>
+        `}
+      </div>
+
       <div class="panel">
         <div class="panel-title">HOW TO INTERRUPT</div>
         ${[
@@ -1193,6 +1225,64 @@ function showSignalModal() {
       </div>
     </div>
   `;
+}
+
+function showRepoConfigModal() {
+  const repo = STATE.board?.repo || {};
+  const c = document.createElement('div');
+  c.innerHTML = `
+    <div class="modal-overlay" onclick="if(event.target===this)this.remove()">
+      <div class="modal input-modal" style="position:relative">
+        <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">&times;</button>
+        <h3>Configure Target Repository</h3>
+        <p style="font-size:11px;color:var(--text-dim);margin-top:8px;">
+          Agents will clone this repo and push code artifacts (source, tests, configs) here.
+          Board artifacts (.agent-board/) stay in SwarmBoard.
+        </p>
+        <div style="margin-top:16px">
+          <label>Repository URL</label>
+          <input type="text" id="repo-config-url" value="${repo.url || ''}" placeholder="https://github.com/user/repo.git" />
+          <label style="margin-top:8px">Default Branch</label>
+          <input type="text" id="repo-config-branch" value="${repo.branch || 'main'}" placeholder="main" />
+          <div style="font-size:10px;color:var(--text-dim);margin-top:8px;line-height:1.5;">
+            <strong>Authentication:</strong> Ensure git credentials are configured on this machine:<br>
+            &nbsp;&nbsp;• SSH: <code>ssh-keygen</code> + add key to GitHub/GitLab<br>
+            &nbsp;&nbsp;• HTTPS: <code>git credential-store</code> or <code>gh auth login</code><br>
+            The dashboard does NOT store credentials — agents use whatever git auth is available on the host.
+          </div>
+          <div class="btn-row">
+            <button class="btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+            <button class="btn-primary" onclick="saveRepoConfig()">Save</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(c);
+  document.getElementById('repo-config-url').focus();
+}
+
+async function saveRepoConfig() {
+  const url = document.getElementById('repo-config-url').value.trim();
+  const branch = document.getElementById('repo-config-branch').value.trim() || 'main';
+  if (!url) { showToast('Repository URL is required', 'error'); return; }
+  const p = STATE?.activeProject || '';
+  try {
+    const res = await fetch('/api/projects/repo?project=' + encodeURIComponent(p), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repoUrl: url, repoBranch: branch }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showToast('Repository configured: ' + url, 'success');
+      document.querySelector('.modal-overlay')?.remove();
+      await refreshState();
+    } else {
+      showToast(data.error || 'Failed to save repo config', 'error');
+    }
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
 }
 
 function showCreateTicketModal() {
@@ -1475,6 +1565,16 @@ function showCreateProjectModal() {
             </div>
             <input type="file" id="spec-file-input" accept=".md,.markdown,.txt" style="display:none" onchange="handleSpecFile(this.files[0])" />
           </div>
+          <details style="margin-top:12px;cursor:pointer;">
+            <summary style="font-size:12px;color:var(--text-dim);font-weight:500;">Git Repository (optional)</summary>
+            <div style="margin-top:8px;">
+              <label>Repo URL</label>
+              <input type="text" id="new-project-repo-url" placeholder="https://github.com/user/repo.git" />
+              <label style="margin-top:4px">Default Branch</label>
+              <input type="text" id="new-project-repo-branch" placeholder="main" value="main" />
+              <div style="font-size:10px;color:var(--text-dim);margin-top:4px;">Agents will clone this repo and push code artifacts here. Ensure git credentials are configured on this machine (SSH key or credential helper).</div>
+            </div>
+          </details>
           <div class="btn-row">
             <button class="btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
             <button class="btn-primary" onclick="createProject()">Create</button>
@@ -1534,7 +1634,12 @@ async function createProject() {
     const res = await fetch('/api/projects/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, specContent: specContent || undefined }),
+      body: JSON.stringify({
+        name,
+        specContent: specContent || undefined,
+        repoUrl: document.getElementById('new-project-repo-url')?.value.trim() || undefined,
+        repoBranch: document.getElementById('new-project-repo-branch')?.value.trim() || undefined,
+      }),
     });
     const data = await res.json();
     if (data.ok) {

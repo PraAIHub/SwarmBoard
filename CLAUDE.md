@@ -215,11 +215,21 @@ claude
 
 SwarmBoard works with any project that has a spec. Here's how:
 
-1. Write your project spec in `SPEC.md` (or any markdown file)
-2. Set the spec path in `.agent-board/board.json` → `"spec"` field
-3. Start the dashboard: `cd dashboard && node server.js`
-4. The PM agent reads your spec, creates and grooms tickets
-5. Approve tickets (or click **Start Sprint** to bulk-approve)
-6. Dev, Reviewer, and Test agents pick up work automatically
+1. Start the dashboard: `cd dashboard && node server.js`
+2. Create a project via the dashboard or PM Chat
+3. Write your spec in `SPEC.md` or use PM Chat to generate one (it will discuss tech stack choices with you)
+4. (Optional) Configure a target git repo in the project settings — agents will clone it and push code there
+5. The PM agent reads your spec, creates and grooms tickets
+6. Approve tickets (or click **Start Sprint** to bulk-approve)
+7. Dev, Reviewer, and Test agents pick up work automatically
 
-The `"project"` field in `board.json` controls the dashboard header name. The `"spec"` field tells the PM agent where to find the project spec.
+The `"project"` field in `board.json` controls the dashboard header name. The `"spec"` field tells the PM agent where to find the project spec. The `"repo"` field (if set) tells agents where to push code artifacts.
+
+## Target Repository
+
+Each project can have a separate git repository for code artifacts. Set this via:
+- PM Chat (include `REPO_URL: https://github.com/user/repo.git` in the spec)
+- Dashboard → Human Control → Configure Repository
+- API: `POST /api/projects/repo {repoUrl, repoBranch}`
+
+When configured, agents work in worktrees of the target repo (not the SwarmBoard repo). Board artifacts (`.agent-board/`) are symlinked so agents share state. Authentication uses whatever git credentials are configured on the host machine (SSH keys or credential helpers).
