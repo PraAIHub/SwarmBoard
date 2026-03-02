@@ -152,12 +152,12 @@ These render as interactive cards in the chat UI. The user clicks "Confirm" to e
 │ Project: [MyProject ▾]  [+ New Project]                            │
 ├─────────────────────────────────────────────────────────────────────┤
 │ AGENTS (click to expand/collapse)                                   │
-│ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐               │
-│ │ PM       │ │ DEV      │ │ REVIEWER │ │ QA       │               │
-│ │ ● idle   │ │ ● running│ │ ○ waiting│ │ ○ waiting│               │
-│ │          │ │ →T-001   │ │          │ │          │               │
-│ │          │ │ [Stop]   │ │ [Start]  │ │ [Start]  │               │
-│ └──────────┘ └──────────┘ └──────────┘ └──────────┘               │
+│ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐           │
+│ │ PM     │ │ ARCH   │ │ DEV    │ │ REV    │ │ QA     │           │
+│ │ ● idle │ │ ○ wait │ │ ● run  │ │ ○ wait │ │ ○ wait │           │
+│ │        │ │        │ │ →T-001 │ │        │ │        │           │
+│ │        │ │[Start] │ │ [Stop] │ │[Start] │ │[Start] │           │
+│ └────────┘ └────────┘ └────────┘ └────────┘ └────────┘           │
 ├─────────────────────────────────────────────────────────────────────┤
 │ Tabs: [Sprint Board] [Blackboard] [Agent Logs] [Human Control] [Chat]│
 └─────────────────────────────────────────────────────────────────────┘
@@ -179,7 +179,7 @@ These render as interactive cards in the chat UI. The user clicks "Confirm" to e
 
 ### Agent Logs
 - Real-time orchestrator log feed (scrolling, color-coded by level)
-- Filter by agent role (All / PM / DEV / REV / QA)
+- Filter by agent role (All / PM / ARCH / DEV / REV / QA)
 - Shows dispatch events, completions, errors, and auto-dispatch activity
 - **stderr visible** — agent errors now surface in the log (prefixed with `[stderr]`)
 - **Persistent** — logs are written to `.agent-board/projects/{name}/logs/{role}.log` as JSONL and restored on restart

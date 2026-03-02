@@ -255,6 +255,7 @@ function getFullState(projectName) {
   // Derive agent statuses from board
   const agents = [
     { role: 'pm-agent', label: 'PM', status: 'idle', current: null },
+    { role: 'architect-agent', label: 'ARCH', status: 'waiting', current: null },
     { role: 'dev-agent', label: 'DEV', status: 'waiting', current: null },
     { role: 'reviewer-agent', label: 'REV', status: 'waiting', current: null },
     { role: 'test-agent', label: 'QA', status: 'waiting', current: null },

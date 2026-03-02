@@ -20,10 +20,11 @@ Four agents coordinate through the board. Each runs in a separate Claude Code te
 
 | Agent    | Command     | Reads                            | Writes                          | Transitions                                         |
 |----------|-------------|----------------------------------|---------------------------------|-----------------------------------------------------|
-| PM       | `/pm`       | spec, board.json, blackboard.md  | board.json (create/groom)       | `new → groomed → dev-ready`                         |
-| Dev      | `/dev`      | board.json, blackboard.md, code  | code on feature branch, board   | `dev-ready → in-dev → review-ready`                 |
-| Reviewer | `/reviewer` | board.json, blackboard.md, PRs   | board.json, merges PRs          | `review-ready → in-review → test-ready` or `→ changes-requested` |
-| Test     | `/test`     | board.json, blackboard.md, code  | test files, board.json          | `test-ready → in-test → done` or `→ bug ticket`    |
+| PM        | `/pm`        | spec, board.json, blackboard.md  | board.json (create/groom)       | `new → groomed → dev-ready`                         |
+| Architect | `/architect` | spec, board.json, blackboard.md  | board.json, blackboard.md       | validates design/spike tickets at `dev-ready`       |
+| Dev       | `/dev`       | board.json, blackboard.md, code  | code on feature branch, board   | `dev-ready → in-dev → review-ready`                 |
+| Reviewer  | `/reviewer`  | board.json, blackboard.md, PRs   | board.json, merges PRs          | `review-ready → in-review → test-ready` or `→ changes-requested` |
+| Test      | `/test`      | board.json, blackboard.md, code  | test files, board.json          | `test-ready → in-test → done` or `→ bug ticket`    |
 
 ## Ticket State Machine
 
@@ -121,7 +122,7 @@ The dashboard at `http://localhost:3456` provides full control over the sprint:
 ┌─────────────────────────────────────────────────────────────────┐
 │ ◈ SwarmBoard           [Start Sprint] [Reset Sprint] [Auto ON] │
 ├─────────────────────────────────────────────────────────────────┤
-│ AGENTS: [PM ● idle] [DEV ● working] [REV ○ waiting] [QA ○]    │
+│ AGENTS: [PM ● idle] [ARCH ○] [DEV ● working] [REV ○] [QA ○]  │
 ├─────────────────────────────────────────────────────────────────┤
 │ Tabs: [Sprint Board] [Blackboard] [Agent Logs] [Human Control] │
 │                                                                 │
@@ -192,15 +193,19 @@ cd dashboard && npm install && node server.js
 claude
 > /pm
 
-# Terminal 2 — Dev Agent
+# Terminal 2 — Architect Agent
+claude
+> /architect
+
+# Terminal 3 — Dev Agent
 claude
 > /dev
 
-# Terminal 3 — Reviewer Agent
+# Terminal 4 — Reviewer Agent
 claude
 > /reviewer
 
-# Terminal 4 — Test Agent
+# Terminal 5 — Test Agent
 claude
 > /test
 

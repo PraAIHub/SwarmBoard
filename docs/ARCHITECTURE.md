@@ -55,6 +55,7 @@ graph TB
 
     subgraph "Agent Layer"
         PM["PM Agent<br/>/pm"]
+        ARCH["Architect Agent<br/>/architect"]
         DEV["Dev Agent<br/>/dev"]
         REV["Reviewer Agent<br/>/reviewer"]
         TEST["Test Agent<br/>/test"]
@@ -87,6 +88,7 @@ graph TB
     SRV --> ORCHFOR
     SRV --> CHATPROC
     ORCHMAP -->|one per project| PM
+    ORCHMAP -->|one per project| ARCH
     ORCHMAP -->|one per project| DEV
     ORCHMAP -->|one per project| REV
     ORCHMAP -->|one per project| TEST
@@ -94,6 +96,9 @@ graph TB
 
     PM -->|creates/grooms tickets| BJ
     PM -->|posts findings| BB
+    ARCH -->|validates design tickets| BJ
+    ARCH -->|posts findings, decisions| BB
+    ARCH -->|creates spike tickets| BJ
     DEV -->|claims tickets, updates status| BJ
     DEV -->|creates branches, writes code| FEAT
     REV -->|reviews code, merges PRs| FEAT
@@ -102,6 +107,7 @@ graph TB
     TEST -->|updates status, creates bugs| BJ
 
     PM -->|reads first| BB
+    ARCH -->|reads first| BB
     DEV -->|reads first| BB
     REV -->|reads first| BB
     TEST -->|reads first| BB
@@ -215,6 +221,8 @@ Agents are instructed to read the schema and only execute transitions they're pe
 ### Design-First Workflow
 
 Before creating implementation tickets, the PM agent creates a design/architecture ticket (TICKET-001, type "design") containing a mermaid architecture diagram and tech stack as acceptance criteria. The human must approve this design ticket before the PM creates backlog stories. The "design" type is a valid ticket type in `schema.json`.
+
+Once the design ticket is approved (moved to `dev-ready`), the **Architect Agent** validates it — checking tech stack completeness, component boundaries, data flow, storage needs, API design, and security. The architect posts findings and Architecture Decision Records (ADRs) to the blackboard, and can create spike tickets for areas needing investigation. Only after the architect validates the design does the PM create implementation tickets.
 
 ### The Happy Path
 
@@ -876,6 +884,7 @@ graph TD
 | **Earned autonomy** | Conceptual (review rate decay) | Defined in schema.json with timeline |
 | **Multi-project** | Single project | Per-project orchestrators, isolated boards, project switching |
 | **Chat** | Not built in | PM Chat with spec generation, ACTION cards, project creation |
+| **Architect role** | Not built in | Dedicated architect agent validates design, creates ADRs and spike tickets |
 | **Dashboard** | Next.js web app (read-only) | Web dashboard (Express + SSE) with full human control |
 
 ### Design Influences from Kapi
