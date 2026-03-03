@@ -184,6 +184,10 @@ cd dashboard && npm install && node server.js
 # Open http://localhost:3456
 # Click: Start Sprint → Approve All → Toggle Auto-Dispatch
 # Agents spawn automatically as work becomes available
+
+# For private GitHub repos, set OAuth env vars first:
+# export GITHUB_CLIENT_ID=... GITHUB_CLIENT_SECRET=...
+# Then connect via Dashboard → Human Control → GitHub Connection
 ```
 
 ### Option B: Manual Terminals
@@ -237,4 +241,25 @@ Each project can have a separate git repository for code artifacts. Set this via
 - Dashboard → Human Control → Configure Repository
 - API: `POST /api/projects/repo {repoUrl, repoBranch}`
 
-When configured, agents work in worktrees of the target repo (not the SwarmBoard repo). Board artifacts (`.agent-board/`) are symlinked so agents share state. Authentication uses whatever git credentials are configured on the host machine (SSH keys or credential helpers).
+When configured, agents work in worktrees of the target repo (not the SwarmBoard repo). Board artifacts (`.agent-board/`) are symlinked so agents share state.
+
+### GitHub OAuth (for private repos)
+
+SwarmBoard supports GitHub OAuth so agents can clone and push to private repositories without SSH keys or manual credential helpers.
+
+**Setup:**
+1. Create a GitHub OAuth App (Settings → Developer settings → OAuth Apps)
+2. Set the callback URL to `http://localhost:3456/auth/github/callback`
+3. Export env vars before starting the dashboard:
+   ```bash
+   export GITHUB_CLIENT_ID=your_client_id
+   export GITHUB_CLIENT_SECRET=your_client_secret
+   # Optional — defaults to http://localhost:3456/auth/github/callback
+   export GITHUB_CALLBACK_URL=http://localhost:3456/auth/github/callback
+   ```
+4. In the dashboard, go to Human Control → GitHub Connection → Connect GitHub
+5. After authorizing, the repo config modal shows a searchable picker of your GitHub repos
+
+**How it works:** The OAuth token is encrypted at rest (AES-256-GCM) in `projects/{name}/github-token.enc`. When agents run, the orchestrator creates a temporary `GIT_ASKPASS` script that provides the token to git. The token never appears in remote URLs, environment variable values, or command lines.
+
+**Graceful degradation:** If the env vars are not set, OAuth routes return `?auth=not_configured` and agents fall back to whatever git credentials are configured on the host machine (SSH keys or credential helpers). See `docs/ARCHITECTURE.md` for the full authentication flow.

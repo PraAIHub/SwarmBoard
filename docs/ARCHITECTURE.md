@@ -48,6 +48,7 @@ graph TB
 
     subgraph "Server Layer"
         SRV["server.js (Express)"]
+        AUTH["auth.js<br/>GitHub OAuth + token encryption"]
         ORCHMAP["Orchestrators Map<br/>Map&lt;projectName, Orchestrator&gt;"]
         ORCHFOR["orchFor(req)<br/>resolves project → orchestrator"]
         CHATPROC["Chat Processes<br/>Map&lt;projectName, pty&gt;"]
@@ -68,6 +69,7 @@ graph TB
             BJ["board.json<br/>Tickets"]
             BB["blackboard.md<br/>Signals"]
             CJ["chat.json<br/>Chat history"]
+            GT["github-token.enc<br/>OAuth token (encrypted)"]
             HI["history/<br/>Audit trail"]
             SP["sprints/current.json"]
         end
@@ -84,9 +86,11 @@ graph TB
     H --> HALT
     DASH -->|REST + SSE| SRV
     CHAT -->|REST + SSE| SRV
+    SRV --> AUTH
     SRV --> ORCHMAP
     SRV --> ORCHFOR
     SRV --> CHATPROC
+    AUTH -->|encrypt/decrypt| GT
     ORCHMAP -->|one per project| PM
     ORCHMAP -->|one per project| ARCH
     ORCHMAP -->|one per project| DEV
@@ -568,7 +572,81 @@ Without an orchestrator, you manually open 5 terminals, type `/pm`, `/architect`
 
 ### Target Repository Support
 
-Projects can configure a separate git repository for code artifacts via `"repo": {url, branch, cloned}` in `board.json`. When configured, the orchestrator clones the target repo on first agent run and creates worktrees from the clone. The `.agent-board/` directory is symlinked into each worktree so agents share board state. Authentication uses the host machine's git credentials.
+Projects can configure a separate git repository for code artifacts via `"repo": {url, branch, cloned}` in `board.json`. When configured, the orchestrator clones the target repo on first agent run and creates worktrees from the clone. The `.agent-board/` directory is symlinked into each worktree so agents share board state. Authentication uses GitHub OAuth (see below) or the host machine's git credentials.
+
+### GitHub OAuth Authentication
+
+SwarmBoard integrates GitHub OAuth so agents can clone and push to private repositories without requiring SSH keys or manual credential setup on the host machine.
+
+#### Architecture
+
+```
+dashboard/auth.js         — Passport GitHub OAuth strategy, token encryption/storage
+dashboard/server.js       — Mounts auth routes + project-level GitHub API endpoints
+dashboard/orchestrator.js — getGitEnvWithAuth() injects token into agent child processes
+```
+
+#### OAuth Flow
+
+```mermaid
+sequenceDiagram
+    participant U as User (Dashboard)
+    participant S as server.js
+    participant GH as GitHub OAuth
+    participant FS as projects/{name}/github-token.enc
+
+    U->>S: GET /auth/github?project=MyProject
+    S->>GH: Redirect to GitHub authorize (scope: repo)
+    GH->>U: GitHub login + grant consent
+    GH->>S: GET /auth/github/callback?code=...&state=...
+    S->>S: Passport exchanges code for access token
+    S->>FS: Encrypt token (AES-256-GCM) and store
+    S->>U: Redirect to /?auth=success&github_user=...
+```
+
+#### Token Storage & Encryption
+
+Tokens are encrypted at rest using the same AES-256-GCM pattern as project secrets:
+
+- **Key derivation:** `scrypt(hostname + salt)` where the salt lives in `.agent-board/.secrets-key`
+- **Storage location:** `projects/{name}/github-token.enc` (per-project, JSON with iv + authTag + ciphertext)
+- **Token data:** access token, GitHub profile (username, id), connection timestamp, scope
+
+The token is never stored in plaintext, never embedded in remote URLs, and never passed in agent command-line arguments.
+
+#### GIT_ASKPASS Mechanism
+
+When an agent needs git access (clone, fetch, push), the orchestrator provides credentials without exposing the token in process arguments or environment variable values visible to `ps`:
+
+1. `getGitEnvWithAuth()` decrypts the token from `github-token.enc`
+2. Writes a temp shell script to `projects/{name}/.tmp/git-askpass-{pid}.sh` that echoes the token
+3. Sets `GIT_ASKPASS` and `GIT_TERMINAL_PROMPT=0` in the agent's child process environment
+4. Git calls the askpass script when authentication is needed (HTTPS clone/push)
+5. Temp scripts are tracked and cleaned up via `cleanupAskpassFiles()` on process exit
+
+This means agents transparently authenticate to GitHub — no token in remote URLs, no `git credential` configuration needed.
+
+#### API Endpoints
+
+| Route | Method | Purpose |
+|---|---|---|
+| `/auth/github` | GET | Initiate OAuth flow (accepts `?project=`) |
+| `/auth/github/callback` | GET | OAuth callback — stores encrypted token |
+| `/auth/status` | GET | Check if GitHub is connected for a project |
+| `/auth/disconnect` | POST | Remove stored token for a project |
+| `/api/projects/github-status` | GET | Project-level GitHub connection status (dashboard UI) |
+| `/api/github/repos` | GET | List user's GitHub repos (used by repo picker) |
+| `/api/projects/github-disconnect` | POST | Disconnect GitHub for a project |
+
+#### Graceful Degradation
+
+If `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` are not set, `auth.js` registers stub routes that redirect with `?auth=not_configured`. The dashboard shows a "not configured" state in the GitHub Connection panel. Agents fall back to whatever git credentials are configured on the host (SSH keys, credential helpers).
+
+#### Dashboard UI
+
+- **Human Control tab** — GitHub Connection panel: shows connected username or "Connect GitHub" button
+- **Repo Config modal** — when GitHub is connected, shows a searchable repo picker populated from the GitHub API
+- **Header indicator** — shows the connected GitHub username when authenticated
 
 ### How It Works
 
@@ -929,5 +1007,6 @@ SwarmBoard builds on ideas from the Kapi Sprints framework:
 | **Sprint needs full reset** | Stuck in bad state | Reset Sprint button: stops agents, reverts all active tickets → groomed, returns to planning |
 | **Rate limit hits one project** | All agents burning retries | Cross-project rate limiting: all orchestrators stop, dashboard shows rate limit banner |
 | **Chat ACTION executed incorrectly** | Wrong ticket moved/created | ACTION cards require explicit user confirmation before execution |
+| **GitHub token expired/revoked** | Agent git operations fail (clone, push) | Dashboard shows connection status; user re-authenticates via GitHub Connection panel; agents fall back to host credentials |
 
 > **Core principle:** No failure should be silent. Every state change is logged to history. Every cross-cutting issue goes to the blackboard. The human sees everything in `/board` and sprint ceremonies.

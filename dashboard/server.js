@@ -2,11 +2,18 @@ const express = require('express');
 const chokidar = require('chokidar');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+const os = require('os');
+const https = require('https');
 const pty = require('node-pty');
 const Orchestrator = require('./orchestrator');
+const auth = require('./auth');
 
 const app = express();
 app.use(express.json());
+
+// ── GitHub OAuth (mounted early, before route definitions) ──────────────────
+// Deferred to after config constants are defined — see setupAuth call below.
 
 // ── Config ──────────────────────────────────────────────────────────────────
 const BASE_BOARD_DIR = process.env.BOARD_DIR || path.resolve(__dirname, '..', '.agent-board');
@@ -208,6 +215,86 @@ function orchFor(req) {
   const project = sanitizeProjectName(raw) || ctx.projectName;
   return getOrCreateOrchestrator(project);
 }
+
+// ── GitHub OAuth Setup ───────────────────────────────────────────────────────
+auth.setupAuth(app, {
+  boardDir: BASE_BOARD_DIR,
+  projectsDir: PROJECTS_DIR,
+  getActiveProject: () => ctx.projectName,
+});
+
+// GitHub status for a project (used by dashboard UI)
+app.get('/api/projects/github-status', (req, res) => {
+  const project = sanitizeProjectName(req.query.project) || ctx.projectName;
+  const projectDir = path.join(PROJECTS_DIR, project);
+  const token = auth.getGitHubToken(projectDir, BASE_BOARD_DIR);
+  if (token) {
+    res.json({ connected: true, username: token.profile.username, connectedAt: token.connectedAt });
+  } else {
+    res.json({ connected: false });
+  }
+});
+
+// Proxy GitHub API — list user repos (for repo picker)
+app.get('/api/github/repos', (req, res) => {
+  const project = sanitizeProjectName(req.query.project) || ctx.projectName;
+  const projectDir = path.join(PROJECTS_DIR, project);
+  const token = auth.getGitHubToken(projectDir, BASE_BOARD_DIR);
+  if (!token) return res.status(401).json({ error: 'GitHub not connected' });
+
+  const page = parseInt(req.query.page) || 1;
+  const perPage = parseInt(req.query.per_page) || 30;
+  const sort = req.query.sort || 'updated';
+
+  const options = {
+    hostname: 'api.github.com',
+    path: `/user/repos?per_page=${perPage}&page=${page}&sort=${sort}&affiliation=owner,collaborator,organization_member`,
+    method: 'GET',
+    headers: {
+      'Authorization': `token ${token.accessToken}`,
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'SwarmBoard',
+    },
+  };
+
+  const ghReq = https.request(options, (ghRes) => {
+    let data = '';
+    ghRes.on('data', chunk => { data += chunk; });
+    ghRes.on('end', () => {
+      try {
+        const repos = JSON.parse(data);
+        if (Array.isArray(repos)) {
+          res.json(repos.map(r => ({
+            full_name: r.full_name,
+            clone_url: r.clone_url,
+            ssh_url: r.ssh_url,
+            html_url: r.html_url,
+            private: r.private,
+            default_branch: r.default_branch,
+            description: r.description,
+            updated_at: r.updated_at,
+          })));
+        } else {
+          res.status(ghRes.statusCode || 500).json({ error: repos.message || 'GitHub API error' });
+        }
+      } catch (e) {
+        res.status(500).json({ error: 'Failed to parse GitHub response' });
+      }
+    });
+  });
+  ghReq.on('error', (e) => {
+    res.status(500).json({ error: 'GitHub API request failed: ' + e.message });
+  });
+  ghReq.end();
+});
+
+// Disconnect GitHub for a project
+app.post('/api/projects/github-disconnect', (req, res) => {
+  const project = sanitizeProjectName(req.query.project || req.body.project) || ctx.projectName;
+  const projectDir = path.join(PROJECTS_DIR, project);
+  auth.removeGitHubToken(projectDir);
+  res.json({ ok: true });
+});
 
 // ── SSE Clients ─────────────────────────────────────────────────────────────
 let sseClients = [];
@@ -895,6 +982,101 @@ app.get('/api/projects/repo', (req, res) => {
   const orch = orchFor(req);
   const board = orch.readBoard();
   res.json({ repo: board.repo || null, project: orch.projectName });
+});
+
+// ── Secrets Management ──────────────────────────────────────────────────────
+
+function getSecretsKeyPath() {
+  return path.join(BASE_BOARD_DIR, '.secrets-key');
+}
+
+function getOrCreateSalt() {
+  const keyPath = getSecretsKeyPath();
+  if (fs.existsSync(keyPath)) {
+    return fs.readFileSync(keyPath);
+  }
+  const salt = crypto.randomBytes(16);
+  fs.writeFileSync(keyPath, salt);
+  return salt;
+}
+
+function deriveEncryptionKey() {
+  const salt = getOrCreateSalt();
+  const machineId = os.hostname();
+  return crypto.scryptSync(machineId + salt.toString('hex'), salt, 32);
+}
+
+function encryptSecrets(secrets) {
+  const key = deriveEncryptionKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const plaintext = JSON.stringify(secrets);
+  let ciphertext = cipher.update(plaintext, 'utf8', 'hex');
+  ciphertext += cipher.final('hex');
+  const authTag = cipher.getAuthTag().toString('hex');
+  return { iv: iv.toString('hex'), authTag, ciphertext };
+}
+
+function decryptSecrets(encrypted) {
+  const key = deriveEncryptionKey();
+  const iv = Buffer.from(encrypted.iv, 'hex');
+  const authTag = Buffer.from(encrypted.authTag, 'hex');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(authTag);
+  let plaintext = decipher.update(encrypted.ciphertext, 'hex', 'utf8');
+  plaintext += decipher.final('utf8');
+  return JSON.parse(plaintext);
+}
+
+function getSecretsFilePath(projectDir) {
+  return path.join(projectDir, 'secrets.enc');
+}
+
+// Save secrets (encrypted)
+app.post('/api/projects/secrets', (req, res) => {
+  const { secrets } = req.body;
+  const orch = orchFor(req);
+  if (!Array.isArray(secrets)) return res.status(400).json({ error: 'secrets must be an array of {name, value}' });
+
+  try {
+    const encrypted = encryptSecrets(secrets);
+    const secretsPath = getSecretsFilePath(orch.projectDir);
+    fs.writeFileSync(secretsPath, JSON.stringify(encrypted, null, 2));
+
+    // Write metadata (names only) to board.json
+    const board = orch.readBoard();
+    board.secrets = secrets.map(s => ({ name: s.name, configured: true }));
+    board.last_updated = new Date().toISOString();
+    fs.writeFileSync(orch.boardPath, JSON.stringify(board, null, 2));
+
+    orch.addLog('info', `Secrets saved: ${secrets.length} configured`);
+    res.json({ ok: true, count: secrets.length });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to encrypt/save secrets: ' + e.message });
+  }
+});
+
+// Get secret names (NOT values)
+app.get('/api/projects/secrets', (req, res) => {
+  const orch = orchFor(req);
+  const board = orch.readBoard();
+  res.json({ secrets: board.secrets || [] });
+});
+
+// Get decrypted values (for dashboard edit modal only)
+app.get('/api/projects/secrets/values', (req, res) => {
+  const orch = orchFor(req);
+  const secretsPath = getSecretsFilePath(orch.projectDir);
+  if (!fs.existsSync(secretsPath)) {
+    return res.json({ secrets: [] });
+  }
+  try {
+    const encrypted = JSON.parse(fs.readFileSync(secretsPath, 'utf-8'));
+    const secrets = decryptSecrets(encrypted);
+    res.json({ secrets });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to decrypt secrets: ' + e.message });
+  }
 });
 
 // ── PM Chat ─────────────────────────────────────────────────────────────────

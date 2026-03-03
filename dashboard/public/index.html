@@ -354,6 +354,7 @@ let expandedAgent = null;   // Track which agent card is expanded
 let logFilter = 'all';      // Agent log filter
 let agentsCollapsed = false; // Track agents section collapse
 let chatProject = null;     // Which project the chat targets (independent of active project)
+let githubStatus = null;    // { connected, username, connectedAt } or null
 
 // Configurable refresh interval (persisted in localStorage)
 const REFRESH_OPTIONS = [5, 10, 15, 30, 60];
@@ -520,8 +521,15 @@ async function api(endpoint, body) {
 
 async function fetchState() {
   try {
-    const res = await fetch('/api/state');
-    STATE = await res.json();
+    const p = STATE?.activeProject || '';
+    const [stateRes, ghRes] = await Promise.all([
+      fetch('/api/state'),
+      fetch('/api/projects/github-status?project=' + encodeURIComponent(p)).catch(() => null),
+    ]);
+    STATE = await stateRes.json();
+    if (ghRes && ghRes.ok) {
+      githubStatus = await ghRes.json();
+    }
     render();
   } catch (e) {
     console.error('Failed to fetch state:', e);
@@ -551,6 +559,13 @@ function renderHeader() {
   if (repo && repo.url) {
     const short = repo.url.replace(/^https?:\/\/(github\.com|gitlab\.com)\//, '').replace(/\.git$/, '');
     meta += (meta ? ' · ' : '') + `📦 ${short}` + (repo.cloned ? '' : ' (not cloned)');
+  }
+  const secrets = STATE.board?.secrets || [];
+  if (secrets.length > 0) {
+    meta += (meta ? ' · ' : '') + `🔐 ${secrets.length} secret${secrets.length > 1 ? 's' : ''}`;
+  }
+  if (githubStatus && githubStatus.connected) {
+    meta += (meta ? ' · ' : '') + `🐙 @${githubStatus.username}`;
   }
   document.getElementById('project-meta').textContent = meta;
 }
@@ -1022,6 +1037,33 @@ function renderControl() {
       </div>
 
       <div class="panel" style="margin-bottom:12px">
+        <div class="panel-title">🐙 GITHUB CONNECTION</div>
+        ${githubStatus && githubStatus.connected ? `
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 0;">
+            <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--done)"></span>
+            <span style="font-size:12px;font-weight:500;color:var(--done)">Connected as @${escapeHtml(githubStatus.username || '')}</span>
+            <span style="font-size:10px;color:var(--text-muted);margin-left:auto;">${githubStatus.connectedAt ? new Date(githubStatus.connectedAt).toLocaleDateString() : ''}</span>
+          </div>
+          <button class="action-btn" onclick="disconnectGitHub()">
+            <span class="action-btn-icon">🔌</span>
+            <div>
+              <div class="action-btn-label">Disconnect GitHub</div>
+              <div class="action-btn-desc">Remove OAuth token for this project</div>
+            </div>
+          </button>
+        ` : `
+          <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px">Connect GitHub to authenticate git operations via OAuth instead of local credentials.</p>
+          <button class="action-btn" onclick="connectGitHub()">
+            <span class="action-btn-icon">🔗</span>
+            <div>
+              <div class="action-btn-label">Connect GitHub</div>
+              <div class="action-btn-desc">Authorize SwarmBoard to clone and push to your repos</div>
+            </div>
+          </button>
+        `}
+      </div>
+
+      <div class="panel" style="margin-bottom:12px">
         <div class="panel-title">📦 TARGET REPOSITORY</div>
         ${STATE.board?.repo?.url ? `
           <div style="padding:8px 0;font-size:12px;">
@@ -1045,6 +1087,37 @@ function renderControl() {
             </div>
           </button>
         `}
+      </div>
+
+      <div class="panel" style="margin-bottom:12px">
+        <div class="panel-title">🔐 PROJECT SECRETS</div>
+        ${(() => {
+          const secrets = STATE.board?.secrets || [];
+          if (secrets.length > 0) {
+            return `
+              <div style="padding:8px 0;font-size:12px;">
+                <div style="font-weight:500;color:var(--text)">${secrets.length} secret${secrets.length > 1 ? 's' : ''} configured</div>
+                <div style="font-size:10px;color:var(--text-dim);margin-top:4px;">${secrets.map(s => s.name).join(', ')}</div>
+              </div>
+              <button class="action-btn" onclick="showSecretsModal()">
+                <span class="action-btn-icon">✏️</span>
+                <div>
+                  <div class="action-btn-label">Edit Secrets</div>
+                  <div class="action-btn-desc">Update or add project secrets</div>
+                </div>
+              </button>`;
+          } else {
+            return `
+              <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px">No secrets configured. Agents won't have access to database URLs, API keys, etc.</p>
+              <button class="action-btn" onclick="showSecretsModal()">
+                <span class="action-btn-icon">🔑</span>
+                <div>
+                  <div class="action-btn-label">Configure Secrets</div>
+                  <div class="action-btn-desc">Add encrypted secrets (DB URLs, API keys) for agents</div>
+                </div>
+              </button>`;
+          }
+        })()}
       </div>
 
       <div class="panel">
@@ -1230,6 +1303,7 @@ function showSignalModal() {
 
 function showRepoConfigModal() {
   const repo = STATE.board?.repo || {};
+  const ghConnected = githubStatus && githubStatus.connected;
   const c = document.createElement('div');
   c.innerHTML = `
     <div class="modal-overlay" onclick="if(event.target===this)this.remove()">
@@ -1241,15 +1315,24 @@ function showRepoConfigModal() {
           Board artifacts (.agent-board/) stay in SwarmBoard.
         </p>
         <div style="margin-top:16px">
+          ${ghConnected ? `
+            <label>Pick from GitHub</label>
+            <select id="repo-picker" style="width:100%;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-family:var(--sans);font-size:12px;margin-bottom:8px;" onchange="onRepoPick(this)">
+              <option value="">Loading repos...</option>
+            </select>
+            <div style="font-size:9px;color:var(--text-muted);margin-bottom:8px;">Or enter a URL manually below</div>
+          ` : ''}
           <label>Repository URL</label>
           <input type="text" id="repo-config-url" value="${repo.url || ''}" placeholder="https://github.com/user/repo.git" />
           <label style="margin-top:8px">Default Branch</label>
           <input type="text" id="repo-config-branch" value="${repo.branch || 'main'}" placeholder="main" />
           <div style="font-size:10px;color:var(--text-dim);margin-top:8px;line-height:1.5;">
-            <strong>Authentication:</strong> Ensure git credentials are configured on this machine:<br>
-            &nbsp;&nbsp;• SSH: <code>ssh-keygen</code> + add key to GitHub/GitLab<br>
-            &nbsp;&nbsp;• HTTPS: <code>git credential-store</code> or <code>gh auth login</code><br>
-            The dashboard does NOT store credentials — agents use whatever git auth is available on the host.
+            ${ghConnected
+              ? '<strong>Authentication:</strong> Using GitHub OAuth token (connected above).'
+              : `<strong>Authentication:</strong> Ensure git credentials are configured on this machine:<br>
+                &nbsp;&nbsp;• SSH: <code>ssh-keygen</code> + add key to GitHub/GitLab<br>
+                &nbsp;&nbsp;• HTTPS: <code>git credential-store</code> or <code>gh auth login</code><br>
+                Or connect GitHub above for OAuth-based auth.`}
           </div>
           <div class="btn-row">
             <button class="btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
@@ -1259,6 +1342,9 @@ function showRepoConfigModal() {
       </div>
     </div>`;
   document.body.appendChild(c);
+  if (ghConnected) {
+    loadRepoPicker();
+  }
   document.getElementById('repo-config-url').focus();
 }
 
@@ -1277,9 +1363,167 @@ async function saveRepoConfig() {
     if (data.ok) {
       showToast('Repository configured: ' + url, 'success');
       document.querySelector('.modal-overlay')?.remove();
-      await refreshState();
+      await fetchState();
     } else {
       showToast(data.error || 'Failed to save repo config', 'error');
+    }
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+// ── GitHub OAuth Functions ──────────────────────────────────────────────────
+
+function connectGitHub() {
+  const p = STATE?.activeProject || '';
+  window.location.href = '/auth/github?project=' + encodeURIComponent(p);
+}
+
+async function disconnectGitHub() {
+  const p = STATE?.activeProject || '';
+  try {
+    const res = await fetch('/api/projects/github-disconnect?project=' + encodeURIComponent(p), { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      githubStatus = { connected: false };
+      showToast('GitHub disconnected', 'success');
+      await fetchState();
+    }
+  } catch (e) {
+    showToast('Error disconnecting: ' + e.message, 'error');
+  }
+}
+
+async function loadRepoPicker() {
+  const p = STATE?.activeProject || '';
+  const picker = document.getElementById('repo-picker');
+  if (!picker) return;
+  try {
+    const res = await fetch('/api/github/repos?project=' + encodeURIComponent(p) + '&per_page=50&sort=updated');
+    if (!res.ok) { picker.innerHTML = '<option value="">Failed to load repos</option>'; return; }
+    const repos = await res.json();
+    picker.innerHTML = '<option value="">-- Select a repo --</option>' +
+      repos.map(r => `<option value="${escapeHtml(r.clone_url || '')}" data-branch="${escapeHtml(r.default_branch || '')}" data-name="${escapeHtml(r.full_name || '')}">${escapeHtml(r.full_name || '')}${r.private ? ' (private)' : ''}</option>`).join('');
+  } catch (e) {
+    picker.innerHTML = '<option value="">Error loading repos</option>';
+  }
+}
+
+function onRepoPick(select) {
+  const url = select.value;
+  if (!url) return;
+  const opt = select.selectedOptions[0];
+  document.getElementById('repo-config-url').value = url;
+  document.getElementById('repo-config-branch').value = opt?.dataset?.branch || 'main';
+}
+
+// Handle OAuth callback params on page load
+(function handleAuthCallback() {
+  const params = new URLSearchParams(window.location.search);
+  const authResult = params.get('auth');
+  if (authResult === 'success') {
+    const user = params.get('github_user');
+    const safeUser = user ? user.replace(/[<>"'&]/g, '') : '';
+    setTimeout(() => showToast('GitHub connected' + (safeUser ? ' as @' + safeUser : ''), 'success'), 500);
+    window.history.replaceState({}, '', window.location.pathname);
+  } else if (authResult === 'failed') {
+    const reason = (params.get('reason') || 'Unknown error').replace(/[<>"'&]/g, '');
+    setTimeout(() => showToast('GitHub auth failed: ' + reason, 'error'), 500);
+    window.history.replaceState({}, '', window.location.pathname);
+  } else if (authResult === 'not_configured') {
+    setTimeout(() => showToast('GitHub OAuth not configured. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET env vars.', 'error'), 500);
+    window.history.replaceState({}, '', window.location.pathname);
+  }
+})();
+
+async function showSecretsModal() {
+  const p = STATE?.activeProject || '';
+  let existingSecrets = [];
+  try {
+    const res = await fetch('/api/projects/secrets/values?project=' + encodeURIComponent(p));
+    const data = await res.json();
+    existingSecrets = data.secrets || [];
+  } catch (e) { /* no existing secrets */ }
+
+  const presets = ['DATABASE_URL', 'API_KEY', 'REDIS_URL', 'SECRET_KEY', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'];
+
+  const c = document.createElement('div');
+  c.innerHTML = `
+    <div class="modal-overlay" onclick="if(event.target===this)this.remove()">
+      <div class="modal input-modal" style="position:relative;max-width:560px" onclick="event.stopPropagation()">
+        <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">&times;</button>
+        <h3>🔐 Configure Secrets</h3>
+        <p style="font-size:11px;color:var(--text-dim);margin-top:8px;">
+          Secrets are encrypted and stored per-project. Agents receive them as environment variables.
+        </p>
+        <div style="margin-top:12px;margin-bottom:8px;display:flex;gap:8px;align-items:center;">
+          <label style="margin:0;font-size:11px;">Add preset:</label>
+          <select id="secrets-preset" style="font-size:11px;padding:2px 6px;" onchange="if(this.value){addSecretRow(this.value,'');this.value='';}">
+            <option value="">Select...</option>
+            ${presets.map(p => '<option value="' + p + '">' + p + '</option>').join('')}
+          </select>
+        </div>
+        <div id="secrets-rows" style="max-height:300px;overflow-y:auto;"></div>
+        <button class="btn-secondary" style="margin-top:8px;font-size:11px;" onclick="addSecretRow('','')">+ Add Secret</button>
+        <div class="btn-row" style="margin-top:12px;">
+          <button class="btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+          <button class="btn-primary" onclick="saveSecrets()">Save Secrets</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(c);
+
+  // Populate existing secrets
+  if (existingSecrets.length > 0) {
+    existingSecrets.forEach(s => addSecretRow(s.name, s.value));
+  } else {
+    addSecretRow('', '');
+  }
+}
+
+function addSecretRow(name, value) {
+  const container = document.getElementById('secrets-rows');
+  if (!container) return;
+  const row = document.createElement('div');
+  row.className = 'secret-row';
+  row.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:6px;';
+  row.innerHTML = `
+    <input type="text" class="secret-name" value="${name}" placeholder="SECRET_NAME" style="flex:1;font-family:monospace;font-size:12px;" />
+    <input type="password" class="secret-value" value="${value}" placeholder="value" style="flex:2;font-family:monospace;font-size:12px;" />
+    <button onclick="this.previousElementSibling.type=this.previousElementSibling.type==='password'?'text':'password'" style="background:transparent;border:1px solid var(--border);color:var(--text-muted);cursor:pointer;border-radius:4px;padding:2px 6px;font-size:10px;" title="Show/hide">👁</button>
+    <button onclick="this.parentElement.remove()" style="background:transparent;border:1px solid var(--border);color:var(--critical);cursor:pointer;border-radius:4px;padding:2px 6px;font-size:10px;" title="Remove">✕</button>
+  `;
+  container.appendChild(row);
+}
+
+async function saveSecrets() {
+  const rows = document.querySelectorAll('#secrets-rows .secret-row');
+  const secrets = [];
+  rows.forEach(row => {
+    const name = row.querySelector('.secret-name').value.trim();
+    const value = row.querySelector('.secret-value').value;
+    if (name) secrets.push({ name, value });
+  });
+
+  if (secrets.length === 0) {
+    showToast('Add at least one secret', 'error');
+    return;
+  }
+
+  const p = STATE?.activeProject || '';
+  try {
+    const res = await fetch('/api/projects/secrets?project=' + encodeURIComponent(p), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ secrets }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(data.count + ' secret(s) saved', 'success');
+      document.querySelector('.modal-overlay')?.remove();
+      await fetchState();
+    } else {
+      showToast(data.error || 'Failed to save secrets', 'error');
     }
   } catch (e) {
     showToast('Error: ' + e.message, 'error');
@@ -1300,6 +1544,7 @@ function showCreateTicketModal() {
           <option value="bug">Bug</option>
           <option value="tech-debt">Tech Debt</option>
           <option value="spike">Spike</option>
+          <option value="infra">Infrastructure</option>
         </select>
         <label>Priority</label>
         <select id="ticket-priority">

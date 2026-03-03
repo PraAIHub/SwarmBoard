@@ -1,7 +1,10 @@
 const pty = require('node-pty');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
+const os = require('os');
 const { execSync } = require('child_process');
+const auth = require('./auth');
 
 class Orchestrator {
   constructor(projectRoot, projectDir) {
@@ -139,8 +142,8 @@ class Orchestrator {
 
     const tickets = board.tickets || [];
 
-    // Architect: validate design/spike tickets that are dev-ready
-    const archDesignReady = tickets.filter(t => t.status === 'dev-ready' && (t.type === 'design' || t.type === 'spike'));
+    // Architect: validate design/spike/infra tickets that are dev-ready
+    const archDesignReady = tickets.filter(t => t.status === 'dev-ready' && (t.type === 'design' || t.type === 'spike' || t.type === 'infra'));
     const archInProgress = tickets.filter(t => t.status === 'in-dev' && t.assignee === 'architect-agent');
     if (archInProgress.length > 0) {
       work['architect-agent'].resume = archInProgress[0];
@@ -159,7 +162,7 @@ class Orchestrator {
     const devInProgress = tickets.filter(t => t.status === 'in-dev' && t.assignee === 'dev-agent');
     const allInDev = tickets.filter(t => t.status === 'in-dev');
     const changesRequested = tickets.filter(t => t.status === 'changes-requested');
-    const devReady = tickets.filter(t => t.status === 'dev-ready' && t.type !== 'design' && t.type !== 'spike');
+    const devReady = tickets.filter(t => t.status === 'dev-ready' && t.type !== 'design' && t.type !== 'spike' && t.type !== 'infra');
     if (devInProgress.length > 0) {
       // Resume in-progress ticket — not blocked, this IS the work
       work['dev-agent'].resume = devInProgress[0];
@@ -277,6 +280,15 @@ CRITICAL: You are running in a git worktree that starts from main (HEAD). Create
     const specPath = board.spec || 'SPEC.md';
     const repo = board.repo || null;
 
+    const boardSecrets = board.secrets || [];
+    let secretsContext = '';
+    if (boardSecrets.length > 0) {
+      const names = boardSecrets.map(s => s.name).join(', ');
+      secretsContext = `
+CONFIGURED SECRETS: ${names}
+These are available as environment variables. Do NOT hardcode them in source code.`;
+    }
+
     let repoContext = '';
     if (repo && repo.url) {
       repoContext = `
@@ -288,7 +300,7 @@ Push your feature branches to this repo's remote origin.`;
     }
 
     return `You are operating as ${role} in the ${projectName} project.
-Spec location: ${specPath}${repoContext}
+Spec location: ${specPath}${repoContext}${secretsContext}
 
 Follow these instructions exactly:
 
@@ -367,6 +379,73 @@ CRITICAL RESTRICTION: NEVER read, modify, create, or delete any files inside the
     return board.repo || null;
   }
 
+  getDecryptedSecrets() {
+    const secretsPath = path.join(this.projectDir, 'secrets.enc');
+    if (!fs.existsSync(secretsPath)) return {};
+    try {
+      const keyPath = path.join(this.projectRoot, '.agent-board', '.secrets-key');
+      if (!fs.existsSync(keyPath)) return {};
+      const salt = fs.readFileSync(keyPath);
+      const machineId = os.hostname();
+      const key = crypto.scryptSync(machineId + salt.toString('hex'), salt, 32);
+      const encrypted = JSON.parse(fs.readFileSync(secretsPath, 'utf-8'));
+      const iv = Buffer.from(encrypted.iv, 'hex');
+      const authTag = Buffer.from(encrypted.authTag, 'hex');
+      const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+      decipher.setAuthTag(authTag);
+      let plaintext = decipher.update(encrypted.ciphertext, 'hex', 'utf8');
+      plaintext += decipher.final('utf8');
+      const secrets = JSON.parse(plaintext);
+      const env = {};
+      for (const s of secrets) {
+        if (s.name && s.value) env[s.name] = s.value;
+      }
+      return env;
+    } catch (e) {
+      return {};
+    }
+  }
+
+  /**
+   * Build git environment variables for OAuth-based authentication.
+   * Uses GIT_ASKPASS with a temp script that echoes the GitHub token.
+   * Returns env vars to merge into the child process environment,
+   * or {} if no GitHub token is configured.
+   */
+  getGitEnvWithAuth() {
+    const boardDir = path.join(this.projectRoot, '.agent-board');
+    const token = auth.getGitHubToken(this.projectDir, boardDir);
+    if (!token || !token.accessToken) return {};
+
+    // Write a temp GIT_ASKPASS script that echoes the token
+    // Use single quotes to prevent shell expansion; escape any embedded single quotes
+    const askpassDir = path.join(this.projectDir, '.tmp');
+    fs.mkdirSync(askpassDir, { recursive: true, mode: 0o700 });
+    const safeToken = token.accessToken.replace(/'/g, "'\\''");
+    const askpassPath = path.join(askpassDir, `git-askpass-${process.pid}-${Date.now()}.sh`);
+    fs.writeFileSync(askpassPath, `#!/bin/sh\necho '${safeToken}'\n`, { mode: 0o700 });
+
+    // Track for cleanup
+    if (!this._askpassFiles) this._askpassFiles = [];
+    this._askpassFiles.push(askpassPath);
+
+    return {
+      GIT_ASKPASS: askpassPath,
+      GIT_TERMINAL_PROMPT: '0',
+    };
+  }
+
+  /**
+   * Clean up any temp GIT_ASKPASS scripts created during this session.
+   */
+  cleanupAskpassFiles() {
+    if (!this._askpassFiles) return;
+    for (const f of this._askpassFiles) {
+      try { fs.unlinkSync(f); } catch (e) { /* already gone */ }
+    }
+    this._askpassFiles = [];
+  }
+
   /**
    * Get the git root directory for worktrees. If the project has a configured
    * external repo, use the cloned repo. Otherwise use the SwarmBoard project root.
@@ -388,10 +467,13 @@ CRITICAL RESTRICTION: NEVER read, modify, create, or delete any files inside the
     if (!repo || !repo.url) return this.projectRoot; // no external repo configured
 
     const repoDir = path.join(this.projectDir, 'repo');
+    const gitAuthEnv = this.getGitEnvWithAuth();
+    const execEnv = { ...process.env, ...gitAuthEnv };
+
     if (fs.existsSync(path.join(repoDir, '.git'))) {
       // Repo already cloned — pull latest
       try {
-        execSync(`git pull --ff-only`, { cwd: repoDir, stdio: 'pipe', timeout: 30000 });
+        execSync(`git pull --ff-only`, { cwd: repoDir, stdio: 'pipe', timeout: 30000, env: execEnv });
         this.addLog('info', `Pulled latest from ${repo.url}`);
       } catch (e) {
         this.addLog('warn', `Could not pull latest: ${e.message}`);
@@ -406,6 +488,7 @@ CRITICAL RESTRICTION: NEVER read, modify, create, or delete any files inside the
         cwd: this.projectDir,
         stdio: 'pipe',
         timeout: 120000,
+        env: execEnv,
       });
 
       // Checkout the configured branch if not default
@@ -585,6 +668,12 @@ CRITICAL RESTRICTION: NEVER read, modify, create, or delete any files inside the
       // (avoids shell expansion of backticks and $ in prompts).
       const cleanEnv = { ...process.env };
       delete cleanEnv.CLAUDECODE;
+      // Inject project secrets as environment variables
+      const decryptedSecrets = this.getDecryptedSecrets();
+      Object.assign(cleanEnv, decryptedSecrets);
+      // Inject GitHub OAuth token via GIT_ASKPASS for authenticated git operations
+      const gitAuthEnv = this.getGitEnvWithAuth();
+      Object.assign(cleanEnv, gitAuthEnv);
       const promptFile = path.join(this.logsDir, `${role}-prompt.txt`);
       fs.writeFileSync(promptFile, prompt);
       const launcherPath = path.join(__dirname, 'launch-agent.py');
@@ -726,11 +815,12 @@ CRITICAL RESTRICTION: NEVER read, modify, create, or delete any files inside the
           rateLimitHits,
         });
 
-        // Clean up the worktree after agent exits
+        // Clean up the worktree and temp auth files after agent exits
         const wtPath = this.agents[role].worktree;
         if (wtPath) {
           this.removeWorktree(role, wtPath);
         }
+        this.cleanupAskpassFiles();
 
         this.agents[role].process = null;
         this.agents[role].pid = null;
